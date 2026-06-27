@@ -38,20 +38,19 @@ jobs:
           key: nuget-${{ runner.os }}-${{ hashFiles('**/*.fsproj', 'dotnet-tools.json', 'global.json') }}
           restore-keys: nuget-${{ runner.os }}-
 
-      - run: dotnet tool restore
       - run: npm ci --no-fund --no-audit
 
       - name: Format check (Fantomas)
-        run: dotnet fantomas --check src tests repl.fsx
+        run: npm run format:check
 
       - name: Lint (FSharpLint)
-        run: dotnet fsharplint lint --lint-config fsharplint.json eff-firegrid.fsproj
+        run: npm run lint
 
       - name: Build / type-check
-        run: dotnet build -clp:ErrorsOnly
+        run: npm run build
 
       - name: Fable transpile smoke (no run)
-        run: dotnet fable repl.fsx --outDir build --noCache
+        run: npm run smoke:fable
 
   # The integration suite hits the live S2 API. It runs only when an S2 token
   # secret is configured (e.g. on main / trusted PRs).
@@ -69,7 +68,6 @@ jobs:
         with:
           node-version: '24'
           cache: npm
-      - run: dotnet tool restore
       - run: npm ci --no-fund --no-audit
       - name: Run suite
         env:

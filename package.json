@@ -20,6 +20,7 @@
     "actor:runtime": "dotnet run --project tools/repo/Build.fsproj -- --target ActorRuntime",
     "actor:ergonomic": "dotnet run --project tools/repo/Build.fsproj -- --target ActorErgonomic",
     "actors": "dotnet run --project tools/repo/Build.fsproj -- --target Actors",
+    "demo": "dotnet run --project tools/repo/Build.fsproj -- --target DurableDemo",
     "test": "dotnet run --project tools/repo/Build.fsproj -- --target Test",
     "format": "dotnet run --project tools/repo/Build.fsproj -- --target Format",
     "format:check": "dotnet run --project tools/repo/Build.fsproj -- --target FormatCheck",

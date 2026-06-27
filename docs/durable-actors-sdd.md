@@ -19,6 +19,56 @@ not belong in the tower. The only storage that ever exists is one S2 subject
 stream of typed records; every "distributed-systems feature" (leases, exactly-
 once, timers, virtual actors) is an *emergent reading* of that log.
 
+## Start here — the API you actually write
+
+The whole tower exists to make these two snippets work. This is the forest;
+everything after it is the trees. The ergonomic surface lives in
+`src/Foundation/Actor.fs` (module `Durable`); a runnable demo is
+`scripts/durable-demo.fsx` (`npm run demo`).
+
+**A stateful actor** — persisted state via a reducer over a command log. You
+serialize commands, never state; crash-survival is free because state is just a
+fold of the log:
+
+```fsharp
+type Cmd = Deposit of int | Withdraw of int
+
+let account =
+    Durable.actor "account" 0
+        (fun balance cmd ->
+            match cmd with
+            | Deposit n  -> balance + n
+            | Withdraw n -> max 0 (balance - n))
+        accountCmdCodec
+
+do!    Durable.send  basin account (Durable.Id "acct-1") (Deposit 100)
+let! b = Durable.state basin account (Durable.Id "acct-1")   // 100, rebuilt from the log
+```
+
+**A durable workflow** — an imperative body that survives crashes and durable
+sleeps. Each `Step` runs exactly once across replays; `Sleep` suspends and
+resumes on its deadline:
+
+```fsharp
+let order =
+    Durable.workflow "order" (fun sku ctx -> async {
+        let! reservation = ctx.Step("reserve", fun () -> async { return reserve sku })
+        let! _payment    = ctx.Step("charge",  fun () -> async { return charge sku })
+        do!                ctx.Sleep 86_400_000.0          // 24h, durable
+        let! tracking    = ctx.Step("ship",    fun () -> async { return ship reservation })
+        return tracking
+    })
+
+let! tracking = Durable.run basin order (Durable.Id "order-123") "widget-42"
+```
+
+That is the entire author-facing surface: `actor` / `send` / `state` / `remove`
+and `workflow` / `run`. No journals, folds, replay, ownership, or codecs-for-
+state appear in application code. The rest of this document explains, layer by
+layer, how that surface is built from one S2 stream — and the `actor-0N` spikes
+prove each underlying property. **You read the demo to *use* the library; you
+read the spikes to *trust* it.**
+
 ## The one substrate
 
 All layers are built from exactly these L1 operations (`SubjectHistory`):
@@ -277,24 +327,28 @@ append**:
 
 Layer: L8. Spike: `scripts/actor-05-ergonomic.fsx`.
 
-### What it is
+### What it is — IMPLEMENTED in `src/Foundation/Actor.fs` (module `Durable`)
 
-The decider-as-data of C7 is faithful but verbose. The ergonomic surface is an
-**imperative handler with a durable context**, exactly the Temporal/DBOS shape:
+This layer is no longer a sketch: it is the real module behind the *Start here*
+snippets. Two surfaces over one substrate:
 
 ```fsharp
-type Ctx = {
-    Step  : string -> (unit -> Async<string>) -> Async<string>   // durable, memoized side effect
-    Sleep : float -> Async<unit>                                  // durable wait; suspends the turn
-    State : unit -> WorkflowState
-}
+// stateful actor — state is a fold of a command log (you serialize commands, not state)
+val actor    : kind:string -> initial:'state -> ('state -> 'cmd -> 'state) -> Codec<'cmd> -> Actor<'cmd,'state>
+val send     : S2.Basin -> Actor<'cmd,'state> -> Id -> 'cmd -> Async<unit>
+val state    : S2.Basin -> Actor<'cmd,'state> -> Id -> Async<'state>
+val remove   : S2.Basin -> Actor<'cmd,'state> -> Id -> Async<unit>
 
-module Actor =
-    val define   : (Msg -> Ctx -> Async<string>) -> ActorDef
-    val activate : S2.Basin -> SubjectId -> ActorDef -> Async<Outcome>   // runs C7 under the hood
+// durable workflow — an imperative body driven by deterministic replay
+type Ctx = { Step: string * (unit -> Async<string>) -> Async<string>; Sleep: float -> Async<unit> }
+val workflow : kind:string -> (input:string -> Ctx -> Async<string>) -> Workflow
+val run      : S2.Basin -> Workflow -> Id -> input:string -> Async<string>
 ```
 
-It is implemented by **replaying the handler from the top on every turn**:
+The `actor` surface is C2 StateView generalized to an arbitrary reducer (the KV
+demo is just the `Put/Delete` special case). The `workflow` surface is C7's
+decider wrapped in an imperative `Ctx`. It is implemented by **replaying the
+handler from the top on every turn**:
 `Ctx.Step` memoizes through the C5 ledger (a completed step returns its logged
 result without re-running its thunk); `Ctx.Sleep` either observes a fired timer
 and proceeds, or journals `TimerSet` and raises a `Suspend` the runtime catches
@@ -320,6 +374,9 @@ record + claim-on-demand"; there is no new primitive.
   ergonomic actor is identical to the C7 decider's journal for the same logic:
   the nice API is a faithful refinement, not a new semantics.
 
+The shipped `Durable` module folds this into one library; `npm run demo` runs
+`scripts/durable-demo.fsx`, the ~90-line application-author view of all of it.
+
 ---
 
 ## Build order (script-first, then promote)
@@ -334,7 +391,14 @@ SDD's methodology.
 | 2 | `scripts/actor-02-durable-steps.fsx` | C5 EffectLedger      | `src/Foundation/EffectLedger.fs` |
 | 3 | `scripts/actor-03-suspension.fsx`    | C6 Timers + Inbox    | `src/Foundation/Suspension.fs` |
 | 4 | `scripts/actor-04-runtime.fsx`       | C7 DurableActor loop | `src/Foundation/DurableActor.fs` |
-| 5 | `scripts/actor-05-ergonomic.fsx`     | C8 Authoring + Directory | `src/Foundation/Actor.fs` |
+| 5 | `scripts/actor-05-ergonomic.fsx`     | C8 Authoring + Directory | `src/Foundation/Actor.fs` ✅ shipped |
+
+The C8 surface is already promoted: `src/Foundation/Actor.fs` (module `Durable`)
+is the ergonomic library, and `scripts/durable-demo.fsx` (`npm run demo`) is the
+application-author view. C4–C7 remain script-proven and are promoted to typed
+`src/Foundation/*.fs` modules next (the `Durable` workflow path currently inlines
+a simplified C5/C6 replay engine; ownership/fencing from C4 hardens `send`/`run`
+once promoted).
 
 Run any spike with its `npm run` target (added to `package.json`), e.g.
 `npm run actor:ownership`, or directly:

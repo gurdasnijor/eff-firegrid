@@ -123,6 +123,8 @@ module Program =
     let actorRuntime () = runFableScript "scripts/actor-04-runtime.fsx"
     let actorErgonomic () = runFableScript "scripts/actor-05-ergonomic.fsx"
 
+    let durableDemo () = runFableScript "scripts/durable-demo.fsx"
+
     let actors () =
         actorOwnership ()
         actorDurableSteps ()
@@ -177,6 +179,7 @@ module Program =
         Target.create "ActorRuntime" (fun _ -> actorRuntime ())
         Target.create "ActorErgonomic" (fun _ -> actorErgonomic ())
         Target.create "Actors" (fun _ -> actors ())
+        Target.create "DurableDemo" (fun _ -> durableDemo ())
         Target.create "Test" (fun _ -> test ())
         Target.create "Bench" (fun _ -> bench ())
         Target.create "BenchE2E" (fun _ -> benchE2E ())
@@ -196,6 +199,7 @@ module Program =
         "RestoreTools" ==> "ActorRuntime" |> ignore
         "RestoreTools" ==> "ActorErgonomic" |> ignore
         "RestoreTools" ==> "Actors" |> ignore
+        "RestoreTools" ==> "DurableDemo" |> ignore
         "RestoreTools" ==> "Test" |> ignore
         "RestoreTools" ==> "Bench" |> ignore
         "RestoreTools" ==> "BenchE2E" |> ignore

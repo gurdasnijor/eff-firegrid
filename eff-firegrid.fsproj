@@ -15,6 +15,7 @@
     <Compile Include="src/S2/Cli.fs" />
     <Compile Include="src/S2/Patterns.fs" />
     <Compile Include="src/Foundation/SubjectHistory.fs" />
+    <Compile Include="src/Foundation/Actor.fs" />
     <Compile Include="src/Program.fs" />
   </ItemGroup>
 

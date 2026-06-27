@@ -1,0 +1,15 @@
+{
+  "name": "eff-firegrid",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "F#/Fable bindings + playground for the S2 (s2.dev) streaming SDK",
+  "scripts": {
+    "play": "dotnet fable repl.fsx --outDir build --runScript",
+    "watch": "dotnet fable watch repl.fsx --outDir build --runScript",
+    "test": "dotnet fable tests/Suite.fsx --outDir build_test && node build_test/Suite.js"
+  },
+  "dependencies": {
+    "@s2-dev/streamstore": "^0.24.1"
+  }
+}

@@ -1,0 +1,15 @@
+# .NET build output
+bin/
+obj/
+
+# Fable / JS build output
+build/
+build_test/
+fable_modules/
+node_modules/
+
+# Safety net: stray Fable outputs if ever compiled without --outDir
+*.fs.js
+*.fs.ts
+*.fsx.js
+*.fsx.ts

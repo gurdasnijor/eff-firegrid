@@ -22,32 +22,32 @@ module S2Patterns =
     let private drsCtor: obj = serialization?DeserializingReadSession
 
     [<Emit("new $0($1, $2, $3)")>]
-    let private newSAS (ctor: obj) (sess: obj) (serialize: obj) (opts: obj) : obj = jsNative
+    let private newSAS (_ctor: obj) (_sess: obj) (_serialize: obj) (_opts: obj) : obj = jsNative
 
     [<Emit("new $0($1, $2)")>]
-    let private newDRS (ctor: obj) (sess: obj) (deserialize: obj) : obj = jsNative
+    let private newDRS (_ctor: obj) (_sess: obj) (_deserialize: obj) : obj = jsNative
 
     [<Emit("$0.submit($1)")>]
-    let private sasSubmit (sas: obj) (msg: obj) : JS.Promise<obj> = jsNative
+    let private sasSubmit (_sas: obj) (_msg: obj) : JS.Promise<obj> = jsNative
 
     [<Emit("$0.start")>]
-    let private rangeStart (r: obj) : float = jsNative
+    let private rangeStart (_r: obj) : float = jsNative
 
     [<Emit("$0.end")>]
-    let private rangeEnd (r: obj) : float = jsNative
+    let private rangeEnd (_r: obj) : float = jsNative
 
     [<Emit("$0.cancel()")>]
-    let private drsCancel (drs: obj) : JS.Promise<unit> = jsNative
+    let private drsCancel (_drs: obj) : JS.Promise<unit> = jsNative
 
     // DeserializingReadSession is a plain web ReadableStream; drain it via a reader.
     [<Emit("$0.getReader()")>]
-    let private getReader (rs: obj) : obj = jsNative
+    let private getReader (_rs: obj) : obj = jsNative
 
     [<Emit("$0.read()")>]
-    let private readerRead (rdr: obj) : JS.Promise<obj> = jsNative
+    let private readerRead (_rdr: obj) : JS.Promise<obj> = jsNative
 
     [<Emit("$0.releaseLock()")>]
-    let private releaseLock (rdr: obj) : unit = jsNative
+    let private releaseLock (_rdr: obj) : unit = jsNative
 
     /// Range of seq nums a submitted message occupied (may span multiple records when chunked).
     type MessageRange = { Start: int64; End: int64 }
@@ -153,10 +153,10 @@ module S2Patterns =
 
     module Json =
         [<Emit("new TextEncoder().encode(JSON.stringify($0))")>]
-        let private encode (x: obj) : byte[] = jsNative
+        let private encode (_x: obj) : byte[] = jsNative
 
         [<Emit("JSON.parse(new TextDecoder().decode($0))")>]
-        let private decode (b: byte[]) : obj = jsNative
+        let private decode (_b: byte[]) : obj = jsNative
 
         /// Serialize a value to JSON bytes (records/values stringify directly).
         let serialize<'msg> (m: 'msg) : byte[] = encode (box m)

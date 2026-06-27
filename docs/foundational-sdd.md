@@ -16,9 +16,10 @@ Build the happy-path substrate for stream-derived state on S2:
 
 ```text
 S2 client
-  -> StreamLog
-    -> StateView
-      -> KvStore
+  -> SubjectHistory
+    -> Deterministic fold
+      -> StateView
+        -> KvStore
 ```
 
 `StateView` is the S2 KV-demo-style orchestrator: one host-local loop owns local
@@ -46,12 +47,12 @@ L3  KvStore
     purpose:    first concrete proof of the S2 KV pattern
 
 L2  StateView
-    depends on: L1 StreamLog and L0 pull-based read sessions
+    depends on: L1 SubjectHistory and L0 pull-based read sessions
     purpose:    fold one typed stream into local state and serve reads
 
-L1  StreamLog
+L1  SubjectHistory
     depends on: L0 S2 client
-    purpose:    typed append/read/session/checkTail over S2
+    purpose:    one authoritative subject history over one S2 stream
 
 L0  S2 client
     exists:     src/S2/Client.fs and src/S2/Patterns.fs
@@ -101,18 +102,18 @@ Those are deferred from the happy path.
 Use one convention everywhere:
 
 ```text
-StreamVersion = exclusive upper bound = next sequence number
+Version = exclusive upper bound = next sequence number
 ```
 
 Examples:
 
-- empty stream tail is `StreamVersion 0`
-- record `SeqNum 0` is applied when `AppliedTail >= StreamVersion 1`
+- empty subject tail is `Version 0`
+- record `Seq 0` is applied when `AppliedTail >= Version 1`
 - S2 append ack `End.SeqNum` is the append batch end-exclusive version
 - S2 `checkTail` returns the current end-exclusive version
 - strong read waits for `AppliedTail >= checkedTail`
 
-Do not use `StreamVersion` to mean "last applied record sequence."
+Do not use `Version` to mean "last applied record sequence."
 
 ## Capability C0: S2 Client Pull Cursor
 
@@ -136,12 +137,14 @@ module S2 =
 
 This is load-bearing for `StateView`.
 
-## Capability C1: StreamLog
+## Capability C1: SubjectHistory
 
 Layer: L1.
 
-`StreamLog` is the typed boundary over S2. `StateView` and `KvStore` consume
-typed `StreamLog` records, not raw SDK records.
+`SubjectHistory` is the typed durable-kernel boundary over S2. It models one S2
+stream as one authoritative durable subject history. `StateView`, `KvStore`, and
+later durable-work kernels consume typed `SubjectHistory` records, not raw SDK
+records.
 
 ### Existing Lower Surfaces
 
@@ -163,102 +166,102 @@ message-level retry semantics, but it is not the foundation substrate.
 
 Happy-path decision:
 
-- foundation `StreamLog` uses one event per raw S2 record with an explicit codec
+- foundation `SubjectHistory` uses one durable record per raw S2 record with an
+  explicit codec
 - `S2Patterns` is opt-in later for large event payloads
-- `StateView` should call `StreamLog`, not `S2Patterns` directly
+- `StateView` should call `SubjectHistory`, not `S2Patterns` directly
+- list-returning "read all from seq" helpers are not part of the kernel surface;
+  replay/materialization is cursor/fold based
 
 ### Proposed Surface
 
 ```fsharp
-type StreamId = StreamId of string
-type SeqNum = SeqNum of int64
-type StreamVersion = StreamVersion of int64
+type SubjectId = SubjectId of string
+type Seq = Seq of int64
+type Version = Version of int64
 
-type LogRecord<'event> =
-    { SeqNum: SeqNum
-      Event: 'event }
+type StoredRecord<'record> =
+    { Seq: Seq
+      Body: 'record }
 
-type AppendConflict =
-    { Expected: StreamVersion
-      Actual: StreamVersion }
+type AppendConflict<'record> =
+    { Expected: Version
+      Actual: Version
+      Conflicting: StoredRecord<'record> option }
 
-type EventCodec<'event> =
-    { Encode: 'event -> string
-      Decode: string -> Result<'event, string> }
+type AppendOutcome<'record> =
+    | Appended of next: Version
+    | IdempotentRetry of alreadyAt: Version * existing: StoredRecord<'record>
+    | Conflict of AppendConflict<'record>
 
-type AppendRange =
-    { Start: SeqNum
-      EndExclusive: StreamVersion
-      Tail: StreamVersion }
+type Codec<'record> =
+    { Encode: 'record -> string
+      Decode: string -> Result<'record, string> }
 
-type AppendTicket =
-    { Ack: Async<AppendRange> }
+type Cursor<'record>
 
-type TypedAppendSession<'event>
-type TypedReadSession<'event>
-type TypedReadCursor<'event>
+module SubjectHistory =
+    val tail :
+        S2.Basin -> SubjectId -> Async<Version>
 
-module StreamLog =
     val append :
-        S2.Basin -> EventCodec<'event> -> StreamId -> 'event list ->
-            Async<AppendRange>
+        S2.Basin -> Codec<'record> -> SubjectId -> 'record list ->
+            Async<Version>
 
     val appendExpected :
-        S2.Basin -> EventCodec<'event> -> StreamId -> StreamVersion -> 'event list ->
-            Async<Result<AppendRange, AppendConflict>>
+        S2.Basin -> Codec<'record> -> SubjectId -> Version -> 'record list ->
+            Async<Result<Version, AppendConflict<'record>>>
 
-    val readFrom :
-        S2.Basin -> EventCodec<'event> -> StreamId -> SeqNum ->
-            Async<Result<LogRecord<'event> list, string>>
+    val appendIdempotent :
+        S2.Basin -> Codec<'record> -> SubjectId -> Version -> 'record list ->
+            Async<AppendOutcome<'record>>
 
-    val checkTail :
-        S2.Basin -> StreamId -> Async<StreamVersion>
-
-    val openAppendSession :
-        S2.Basin -> EventCodec<'event> -> StreamId ->
-            Async<TypedAppendSession<'event>>
-
-    val submit :
-        'event list -> TypedAppendSession<'event> -> Async<AppendTicket>
-
-    val openReadSession :
-        S2.Basin -> EventCodec<'event> -> StreamId -> SeqNum ->
-            Async<TypedReadSession<'event>>
-
-    val openReadCursor :
-        S2.Basin -> EventCodec<'event> -> StreamId -> SeqNum ->
-            Async<TypedReadCursor<'event>>
+    val openCursor :
+        S2.Basin -> Codec<'record> -> SubjectId -> Seq ->
+            Async<Cursor<'record>>
 
     val tryNext :
-        TypedReadCursor<'event> -> Async<Result<LogRecord<'event> option, string>>
+        Cursor<'record> -> Async<Result<StoredRecord<'record> option, string>>
+
+    val foldTo :
+        S2.Basin -> Codec<'record> -> SubjectId -> Seq -> Version ->
+        'state -> ('state -> StoredRecord<'record> -> 'state) ->
+            Async<'state * Version>
 ```
+
+`appendExpected` is for unowned or contended admission records: create-run,
+external delivery dedupe, and other single-index claims. It must surface enough
+conflict information to distinguish same-record retry from a lost race.
+
+`append` is for the owner-style path after a lane owner/fence has already been
+established. Fencing and owner-local reads are a later capability; this C1 only
+keeps the physical append/fold pieces honest.
 
 ### Script First
 
 First proof:
 
 ```text
-scripts/foundation-00-stream-log.fsx
+scripts/foundation-00-subject-history.fsx
 ```
 
 Prove against real ephemeral S2 streams:
 
-- typed append/read round trip
-- `checkTail` returns end-exclusive version
-- append ack/session ack returns `AppendRange`
-- conditional append conflict maps to `AppendConflict`
-- typed read session tails records
-- typed read cursor pulls one record at a time without closing the session
-- `readFrom` reads from a sequence to the current tail, paging internally rather
-  than silently returning one bounded batch
+- new subject starts at `Version 0`
+- append at expected version succeeds and advances the subject tail
+- stale append conflict returns expected version, actual version, and the
+  conflicting committed record when available
+- same-record stale retry is classified as idempotent retry
+- different stale append is classified as conflict
+- deterministic fold applies committed records in order through a target version
+- follower read barrier is `tail` plus `foldTo` to that version
 
 Notes:
 
-- `TypedReadSession.take` is a bounded one-shot helper; it cancels/releases the
-  underlying session after taking records.
-- `TypedReadCursor.tryNext` is the reusable pull-one path needed by StateView.
-- The StateView proof must exercise `tryNext` while blocked at the tail and
-  closing a cursor while a pull is pending.
+- This proof deliberately does not cover fenced owner-local reads, lease expiry,
+  snapshot equivalence, or cross-subject command barriers.
+- S2 `matchSeqNum` and S2 fencing tokens are different primitives. The first
+  proof covers expected-sequence admission. Fenced owner writes are deferred.
 
 ## Capability C2: StateView
 
@@ -276,35 +279,34 @@ type ReadConsistency =
 
 type ViewState<'state> =
     { State: 'state
-      AppliedTail: StreamVersion }
+      AppliedTail: Version }
 
-type StateView<'event, 'state>
+type StateView<'record, 'state>
 
 module StateView =
     val start :
         S2.Basin ->
-        EventCodec<'event> ->
-        StreamId ->
-        recoverFrom: SeqNum ->
+        Codec<'record> ->
+        SubjectId ->
+        recoverFrom: Seq ->
         initial: 'state ->
-        apply: ('state -> 'event -> 'state) ->
-            Async<StateView<'event, 'state>>
+        apply: ('state -> StoredRecord<'record> -> 'state) ->
+            Async<StateView<'record, 'state>>
 
     val read :
-        ReadConsistency -> StateView<'event, 'state> ->
+        ReadConsistency -> StateView<'record, 'state> ->
             Async<ViewState<'state>>
 
-    val stop : StateView<'event, 'state> -> Async<unit>
+    val stop : StateView<'record, 'state> -> Async<unit>
 ```
 
 Internal loop:
 
-- open typed append session for writes that originate through the view
-- open typed read cursor from `recoverFrom`
+- open typed subject-history cursor from `recoverFrom`
 - fold every pulled record into local state
-- set `AppliedTail = record.SeqNum + 1`
+- set `AppliedTail = record.Seq + 1`
 - serve eventual reads from current local state
-- for strong reads, call `StreamLog.checkTail`, then wait until
+- for follower strong reads, call `SubjectHistory.tail`, then wait until
   `AppliedTail >= checkedTail`
 - keep pending strong reads in required-tail order
 - drain pending reads as `AppliedTail` advances
@@ -315,6 +317,8 @@ Write ack invariant:
 - this is valid only for commands like `put` and `delete` that do not return
   prior state
 - operations that must return prior state need a different path
+- owner-local linearizable reads are deferred until keyed ownership/fencing is
+  introduced; they require self-demotion when the lease expires
 
 ### Script First
 
@@ -350,22 +354,22 @@ type KvStore<'key, 'value>
 module KvStore =
     val start :
         S2.Basin ->
-        EventCodec<KvEvent<'key, 'value>> ->
-        StreamId ->
-        recoverFrom: SeqNum ->
+        Codec<KvEvent<'key, 'value>> ->
+        SubjectId ->
+        recoverFrom: Seq ->
             Async<KvStore<'key, 'value>>
 
     val put :
         'key -> 'value -> KvStore<'key, 'value> ->
-            Async<AppendRange>
+            Async<Version>
 
     val delete :
         'key -> KvStore<'key, 'value> ->
-            Async<AppendRange>
+            Async<Version>
 
     val get :
         ReadConsistency -> 'key -> KvStore<'key, 'value> ->
-            Async<StreamVersion * 'value option>
+            Async<Version * 'value option>
 ```
 
 Write path:
@@ -402,12 +406,12 @@ strong get   = checkTail + wait for StateView catch-up
 ```text
 src/
   Foundation/
-    StreamLog.fs
+    SubjectHistory.fs
     StateView.fs
     KvStore.fs
 
 scripts/
-  foundation-00-stream-log.fsx
+  foundation-00-subject-history.fsx
   foundation-01-state-view.fsx
   foundation-02-kv-store.fsx
 ```
@@ -416,8 +420,8 @@ scripts/
 
 Each layer starts as a script proof, then promotes the stable code into `src/`.
 
-1. Write `scripts/foundation-00-stream-log.fsx`; promote
-   `src/Foundation/StreamLog.fs`.
+1. Write `scripts/foundation-00-subject-history.fsx`; promote
+   `src/Foundation/SubjectHistory.fs`.
 2. Write `scripts/foundation-01-state-view.fsx`; promote
    `src/Foundation/StateView.fs`.
 3. Write `scripts/foundation-02-kv-store.fsx`; promote
@@ -428,8 +432,8 @@ Each layer starts as a script proof, then promotes the stable code into `src/`.
 The happy-path foundation is ready for the next design pass when:
 
 1. L0 proves pull-one read cursor behavior against real S2.
-2. `StreamLog` proves typed append/read/checkTail/session/cursor behavior
-   against real S2.
+2. `SubjectHistory` proves expected-sequence append, conflict classification,
+   cursor-based fold, and follower catch-up against real S2.
 3. `StateView` proves eventual and strong reads over a KV-demo-style
    orchestrator loop.
 4. `KvStore` proves the S2 KV pattern end to end.

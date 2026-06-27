@@ -2,14 +2,31 @@
   "$schema": "https://raw.githubusercontent.com/fsprojects/FSharpLint/main/src/FSharpLint.Core/Configuration/FSharpLint.schema.json",
   "ignoreFiles": [
     "build/**",
-    "build_test/**"
+    "build_test/**",
+    "build_subject_history/**",
+    "build_minimum/**"
   ],
-
   "//": "Naming rules muted where they fight Fable JS interop / our conventions.",
-  "GenericTypesNames": { "enabled": false },
-  "MemberNames": { "enabled": false },
-  "InterfaceNames": { "enabled": false },
-  "PublicValuesNames": { "enabled": false },
-  "PrivateValuesNames": { "enabled": false },
-  "InternalValuesNames": { "enabled": false }
+  "genericTypesNames": {
+    "enabled": false
+  },
+  "memberNames": {
+    "enabled": false
+  },
+  "interfaceNames": {
+    "enabled": false
+  },
+  "publicValuesNames": {
+    "enabled": false
+  },
+  "privateValuesNames": {
+    "enabled": false
+  },
+  "internalValuesNames": {
+    "enabled": false
+  },
+  "// unused values": "FSharpLint 0.27.0 has no unusedValue rule; FS1182 is enabled as an error in the project.",
+  "uselessBinding": {
+    "enabled": true
+  }
 }

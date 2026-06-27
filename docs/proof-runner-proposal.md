@@ -134,7 +134,7 @@ fake clients, event mappers, or alternate interpreters.
 ```text
 src/
   Foundation/
-    StreamLog.fs
+    SubjectHistory.fs
     StateView.fs
     KvStore.fs
 
@@ -151,7 +151,7 @@ src/
 
 scripts/
   _prelude.fsx
-  foundation-00-stream-log.fsx
+  foundation-00-subject-history.fsx
   foundation-01-state-view.fsx
   foundation-02-kv-store.fsx
   all.fsx
@@ -849,7 +849,7 @@ Near-term commands should preserve the current `npm run play` style.
 ```sh
 npm run play
 npm run watch
-npm run script:stream-log
+npm run script:subject-history
 npm run script:kv-store
 npm run scripts
 npm test
@@ -860,7 +860,7 @@ Recommended `package.json` additions:
 ```json
 {
   "scripts": {
-    "script:stream-log": "dotnet fable scripts/foundation-00-stream-log.fsx --outDir build_script --runScript",
+    "script:subject-history": "dotnet fable scripts/foundation-00-subject-history.fsx --outDir build_script --runScript",
     "script:state-view": "dotnet fable scripts/foundation-01-state-view.fsx --outDir build_script --runScript",
     "script:kv-store": "dotnet fable scripts/foundation-02-kv-store.fsx --outDir build_script --runScript",
     "scripts": "dotnet fable scripts/all.fsx --outDir build_scripts && node build_scripts/all.js"
@@ -887,8 +887,8 @@ Deliverables:
 
 1. `scripts/_prelude.fsx` with generic `section`, `check`, unique-name, and
    cleanup helpers.
-2. `scripts/foundation-00-stream-log.fsx` proving typed append/read/session
-   behavior against real S2.
+2. `scripts/foundation-00-subject-history.fsx` proving expected-sequence
+   append, conflict classification, and cursor/fold behavior against real S2.
 3. `scripts/foundation-01-state-view.fsx` proving eventual and strong reads
    over the KV-demo-style orchestrator loop.
 4. `scripts/foundation-02-kv-store.fsx` proving the S2 KV pattern end to end.
@@ -904,7 +904,7 @@ Promote script-proven primitives into production modules.
 
 Deliverables:
 
-1. `src/Foundation/StreamLog.fs`
+1. `src/Foundation/SubjectHistory.fs`
 2. `src/Foundation/StateView.fs`
 3. `src/Foundation/KvStore.fs`
 4. Regression coverage in `tests/Suite.fsx` or `scripts/all.fsx`
@@ -992,7 +992,7 @@ Deliverables:
 
 Start with REPL-friendly durable scripts, not a proof runner. Add a tiny
 generic `_prelude.fsx`, then build the `docs/foundational-sdd.md` layers in
-order: StreamLog, StateView, and KvStore.
+order: SubjectHistory, StateView, and KvStore.
 
 Use scripts to decide which APIs belong in `src/Foundation`. Once several
 scripts repeat the same generic orchestration, extract only that generic

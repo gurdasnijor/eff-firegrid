@@ -48,6 +48,7 @@ module Program =
           "build_bench"
           "build_script"
           "build_scripts"
+          "build_subject_history"
           "tools/repo/bin"
           "tools/repo/obj" ]
 
@@ -100,11 +101,11 @@ module Program =
     let play () =
         run "dotnet" [ "fable"; "repl.fsx"; "--outDir"; "build"; "--runScript" ]
 
-    let scriptStreamLog () =
+    let scriptSubjectHistory () =
         run
             "dotnet"
             [ "fable"
-              "scripts/foundation-00-stream-log.fsx"
+              "scripts/foundation-00-subject-history.fsx"
               "--outDir"
               "build_script"
               "--runScript" ]
@@ -149,7 +150,7 @@ module Program =
         Target.create "Lint" (fun _ -> lint ())
         Target.create "FableSmoke" (fun _ -> fableSmoke ())
         Target.create "Play" (fun _ -> play ())
-        Target.create "ScriptStreamLog" (fun _ -> scriptStreamLog ())
+        Target.create "ScriptSubjectHistory" (fun _ -> scriptSubjectHistory ())
         Target.create "Test" (fun _ -> test ())
         Target.create "Bench" (fun _ -> bench ())
         Target.create "BenchE2E" (fun _ -> benchE2E ())
@@ -162,7 +163,7 @@ module Program =
         "RestoreTools" ==> "Lint" |> ignore
         "RestoreTools" ==> "FableSmoke" |> ignore
         "RestoreTools" ==> "Play" |> ignore
-        "RestoreTools" ==> "ScriptStreamLog" |> ignore
+        "RestoreTools" ==> "ScriptSubjectHistory" |> ignore
         "RestoreTools" ==> "Test" |> ignore
         "RestoreTools" ==> "Bench" |> ignore
         "RestoreTools" ==> "BenchE2E" |> ignore

@@ -8,6 +8,7 @@ build_test/
 build_bench/
 build_script/
 build_scripts/
+build_subject_history/
 fable_modules/
 node_modules/
 

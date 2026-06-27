@@ -9,14 +9,14 @@ open Fable.Core.JsInterop
 module S2Cli =
 
     [<Import("readFileSync", "node:fs")>]
-    let private readFileSync (path: string) (encoding: string) : string = jsNative
+    let private readFileSync (_path: string) (_encoding: string) : string = jsNative
 
     [<Import("homedir", "node:os")>]
     let private homedir () : string = jsNative
 
     // Respect XDG_CONFIG_HOME if set, else ~/.config (matches the s2 CLI).
     [<Emit("(process.env.XDG_CONFIG_HOME || ($0 + '/.config'))")>]
-    let private configDir (home: string) : string = jsNative
+    let private configDir (_home: string) : string = jsNative
 
     /// Path to the s2 CLI config file.
     let configPath () : string =

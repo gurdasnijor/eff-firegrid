@@ -52,5 +52,48 @@ indicative and machine-dependent — re-run locally before trusting small deltas
 - **Deserialize is cheaper than serialize** (186 ns vs 261 ns small) — `JSON.parse`
   + `TextDecoder` beats `JSON.stringify` + `TextEncoder` here.
 
-Numbers are single-machine, single-run indicative figures. Re-run with `npm run
-bench` on the target hardware for decisions.
+# Tier 2 — live E2E throughput
+
+Network-bound, on-demand (**not** CI). Records/sec for the append/read APIs
+against the live AWS endpoint, on an ephemeral stream (`N = 100`). **Compare the
+ratios, not the absolute numbers** — they are dominated by round-trip latency to
+the region.
+
+## Run it
+
+```bash
+npm run bench:e2e
+```
+
+## Snapshot
+
+Environment: Apple M4 · Node 24.14.1 · AWS S2 (`aws.s2.dev`), ~100 ms RTT.
+
+| API | rec/sec | vs unary |
+|-----|--------:|---------:|
+| unary `append` (1 rec / call) | 9.7 | 1× |
+| session `submitAck` (1 rec) | 10.3 | ~1× |
+| patterns `producer.submit` (typed) | 10.3 | ~1× |
+| session **pipelined** (submit-all → ack-all) | 465 | **~48×** |
+| **batched** `append` (100 recs / 1 call) | 1064 | **~110×** |
+| `read` (bulk, 501 recs / 1 call) | 1392 | — |
+
+## What it tells us
+
+- **One-round-trip-per-record APIs are latency-bound.** `unary append`,
+  `session.submitAck`, and `producer.submit` all land at ~10 rec/sec — each
+  awaits durability of a single record, so throughput ≈ 1/RTT. Use them when
+  volume is low or you need strict per-record acknowledgement.
+- **Batch or pipeline for throughput.** A single batched `append` (many records
+  in one call) is **~110×** faster; **pipelining** a session (submit many, then
+  await the tickets) is **~48×**. Either converts a latency-bound workload into a
+  bandwidth-bound one.
+- **`producer.submit` is durable-per-message** (like `submitAck`), so it inherits
+  the same latency bound. For high-throughput typed messaging you would pipeline
+  it — the package's `WritableStream`/`pipeTo` path, which our wrapper does not
+  yet expose. A clear next ergonomic addition if/when it is needed.
+- **Reads are bulk by default** — one `read` returned 501 records at ~1400 rec/sec.
+
+All numbers are single-machine, single-region, single-run and indicative. Re-run
+`npm run bench` / `npm run bench:e2e` on the target hardware/region before
+trusting small deltas.

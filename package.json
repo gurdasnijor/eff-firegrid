@@ -13,7 +13,8 @@
     "format:check": "dotnet fantomas --check src tests benchmarks repl.fsx",
     "lint": "dotnet fsharplint lint --lint-config fsharplint.json eff-firegrid.fsproj",
     "check": "bash tools/check.sh",
-    "bench": "dotnet fable benchmarks/Micro.fsx --outDir build_bench && node build_bench/Micro.js"
+    "bench": "dotnet fable benchmarks/Micro.fsx --outDir build_bench && node build_bench/Micro.js",
+    "bench:e2e": "dotnet fable benchmarks/Throughput.fsx --outDir build_bench && node build_bench/Throughput.js"
   },
   "dependencies": {
     "@s2-dev/streamstore": "^0.24.1",

@@ -911,11 +911,45 @@ module S2 =
     /// A streaming read session. Consume with `iter`.
     type ReadSession = internal { Raw: IReadSession }
 
+    /// A pull-based read cursor over a streaming read session.
+    type ReadCursor =
+        internal
+            { Raw: IReadSession
+              Iterator: obj }
+
     /// Open a streaming read session over the given range.
     let readSession (opts: ReadOptions) (s: Stream) : Async<ReadSession> =
         async {
             let! raw = Async.AwaitPromise(s.Raw.readSession (readInput opts, createObj []))
             return { ReadSession.Raw = raw }
+        }
+
+    /// Open a pull-based read cursor over the given range.
+    let readCursor (opts: ReadOptions) (s: Stream) : Async<ReadCursor> =
+        async {
+            let! raw = Async.AwaitPromise(s.Raw.readSession (readInput opts, createObj []))
+
+            return
+                { Raw = raw
+                  Iterator = asyncIterator (box raw) }
+        }
+
+    /// Pull the next record from a read cursor, leaving the session open.
+    let tryNext (cursor: ReadCursor) : Async<ReadRecord option> =
+        async {
+            let! res = Async.AwaitPromise(iterNext cursor.Iterator)
+
+            if iterDone res then
+                return None
+            else
+                return Some(toRecord (unbox<IReadRecord> (iterValue res)))
+        }
+
+    /// Cancel/close a read cursor.
+    let closeReadCursor (cursor: ReadCursor) : Async<unit> =
+        async {
+            let! _ = Async.AwaitPromise(iterReturn cursor.Iterator)
+            do! Async.AwaitPromise(cursor.Raw.cancel ())
         }
 
     /// Consume a read session, invoking `handler` for each record until it ends.

@@ -43,7 +43,7 @@ copied literally. For `eff-firegrid`, verification should grow in this order:
 
 1. REPL scripts over production modules.
 2. Tiny generic script helpers once repetition appears.
-3. Promoted durable primitives in `src/Durable`.
+3. Promoted foundation primitives in `src/Foundation`.
 4. Script suites that exercise those primitives.
 5. A proof runner only after the scripts reveal the right shape.
 
@@ -133,18 +133,10 @@ fake clients, event mappers, or alternate interpreters.
 
 ```text
 src/
-  Durable/
-    Subject.fs
-    Records.fs
-    Codec.fs
-    History.fs
-    Fold.fs
-    Snapshot.fs
-    Ownership.fs
-    Work.fs
-    Timers.fs
-    Projections.fs
-    Host.fs
+  Foundation/
+    SubjectHistory.fs
+    StateView.fs
+    KvStore.fs
 
   Proofs/
     Core.fs
@@ -159,16 +151,9 @@ src/
 
 scripts/
   _prelude.fsx
-  durable-00-history.fsx
-  durable-01-codec.fsx
-  durable-02-fold.fsx
-  durable-03-snapshot.fsx
-  durable-04-ownership.fsx
-  durable-05-operation.fsx
-  durable-06-retry-barrier.fsx
-  durable-07-timers.fsx
-  durable-08-wake-projection.fsx
-  durable-09-keyed-lane.fsx
+  foundation-00-subject-history.fsx
+  foundation-01-state-view.fsx
+  foundation-02-kv-store.fsx
   all.fsx
 
 proofs/
@@ -186,9 +171,9 @@ proofs/
   Main.fs
 ```
 
-`src/Durable` is the near-term production target from
-`docs/foundational-sdd.md`. These modules should appear only as scripts prove
-the underlying shape.
+`src/Foundation` is the near-term production target from
+`docs/foundational-sdd.md`. These modules should appear only after scripts prove
+the underlying shape against real S2 streams.
 
 `scripts` is the immediate verification surface. Scripts import production
 modules from `src` and exercise them directly.
@@ -864,8 +849,8 @@ Near-term commands should preserve the current `npm run play` style.
 ```sh
 npm run play
 npm run watch
-npm run script:history
-npm run script:ownership
+npm run script:subject-history
+npm run script:kv-store
 npm run scripts
 npm test
 ```
@@ -875,9 +860,9 @@ Recommended `package.json` additions:
 ```json
 {
   "scripts": {
-    "script:history": "dotnet fable scripts/durable-00-history.fsx --outDir build_script --runScript",
-    "script:fold": "dotnet fable scripts/durable-02-fold.fsx --outDir build_script --runScript",
-    "script:ownership": "dotnet fable scripts/durable-04-ownership.fsx --outDir build_script --runScript",
+    "script:subject-history": "dotnet fable scripts/foundation-00-subject-history.fsx --outDir build_script --runScript",
+    "script:state-view": "dotnet fable scripts/foundation-01-state-view.fsx --outDir build_script --runScript",
+    "script:kv-store": "dotnet fable scripts/foundation-02-kv-store.fsx --outDir build_script --runScript",
     "scripts": "dotnet fable scripts/all.fsx --outDir build_scripts && node build_scripts/all.js"
   }
 }
@@ -902,10 +887,12 @@ Deliverables:
 
 1. `scripts/_prelude.fsx` with generic `section`, `check`, unique-name, and
    cleanup helpers.
-2. `scripts/durable-00-history.fsx` proving subject history conditional append.
-3. `scripts/durable-01-codec.fsx` proving record encode/decode failure modes.
-4. `scripts/durable-02-fold.fsx` proving deterministic fold/replay.
-5. `scripts/all.fsx` that runs the current committed durable scripts.
+2. `scripts/foundation-00-subject-history.fsx` proving expected-sequence
+   append, conflict classification, and cursor/fold behavior against real S2.
+3. `scripts/foundation-01-state-view.fsx` proving eventual and strong reads
+   over the KV-demo-style orchestrator loop.
+4. `scripts/foundation-02-kv-store.fsx` proving the S2 KV pattern end to end.
+5. `scripts/all.fsx` that runs the current committed foundation scripts.
 6. `package.json` commands for one script and all scripts.
 
 This milestone intentionally avoids a proof runner, process-host abstraction,
@@ -917,29 +904,29 @@ Promote script-proven primitives into production modules.
 
 Deliverables:
 
-1. `src/Durable/Subject.fs`
-2. `src/Durable/Records.fs`
-3. `src/Durable/Codec.fs`
-4. `src/Durable/History.fs`
-5. `src/Durable/Fold.fs`
-6. Regression coverage in `tests/Suite.fsx` or `scripts/all.fsx`
+1. `src/Foundation/SubjectHistory.fs`
+2. `src/Foundation/StateView.fs`
+3. `src/Foundation/KvStore.fs`
+4. Regression coverage in `tests/Suite.fsx` or `scripts/all.fsx`
 
-Promotion rule: only move helper code from scripts into `src/Durable` after at
-least two scripts need it or the SDD layer cannot be expressed clearly without
-it.
+Promotion rule: only move helper code from scripts into `src/Foundation` after
+the SDD layer cannot be expressed clearly without it or a later script needs the
+same production surface.
 
 ## Third Milestone
 
-Prove the first durable-work semantics.
+Prove the first deferred durable-work semantics after the happy path is stable.
 
 Deliverables:
 
-1. Snapshot reconciliation script and production primitive.
-2. Ownership claim/heartbeat/release script and production primitive.
-3. Durable operation script proving recorded completion prevents re-execution.
-4. Command persistence barrier script.
-5. Timer/external wait script.
-6. Wake projection rebuild script.
+1. Effectively-once output suppression script and production primitive.
+2. Output-producing invocation runtime script and production primitive.
+3. Minimal operation ledger script proving recorded completion prevents
+   re-execution.
+4. Coordination claim script and production primitive.
+5. Fencing/checkpoint script and production primitive.
+6. Timer/external wait script only after the state-view path is stable.
+7. Wake projection rebuild script only after state-view indexes exist.
 
 These should remain REPL-friendly: print the records, print the fold, and make
 the property failure obvious without a separate report viewer.
@@ -1005,12 +992,11 @@ Deliverables:
 
 Start with REPL-friendly durable scripts, not a proof runner. Add a tiny
 generic `_prelude.fsx`, then build the `docs/foundational-sdd.md` layers in
-order: subject history, codec, fold, snapshot, ownership, durable operation,
-command barrier, timers/waits, and wake projections.
+order: SubjectHistory, StateView, and KvStore.
 
-Use scripts to decide which APIs belong in `src/Durable`. Once several scripts
-repeat the same generic orchestration, extract only that generic orchestration
-into runner primitives.
+Use scripts to decide which APIs belong in `src/Foundation`. Once several
+scripts repeat the same generic orchestration, extract only that generic
+orchestration into runner primitives.
 
 Do not start with a full deterministic simulator. Instead, design production
 boundaries so deterministic control can replace live behavior later: clock,

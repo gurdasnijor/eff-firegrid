@@ -199,41 +199,41 @@ module internal Interop =
     let appendInputNs: obj = import "AppendInput" "@s2-dev/streamstore"
 
     [<Emit("new $0($1)")>]
-    let newS2 (ctor: obj) (opts: obj) : IS2 = jsNative
+    let newS2 (_ctor: obj) (_opts: obj) : IS2 = jsNative
 
     [<Emit("$0.string($1)")>]
-    let recString (ns: obj) (p: obj) : obj = jsNative
+    let recString (_ns: obj) (_p: obj) : obj = jsNative
 
     [<Emit("$0.bytes($1)")>]
-    let recBytes (ns: obj) (p: obj) : obj = jsNative
+    let recBytes (_ns: obj) (_p: obj) : obj = jsNative
 
     [<Emit("$0.fence($1)")>]
-    let recFence (ns: obj) (token: string) : obj = jsNative
+    let recFence (_ns: obj) (_token: string) : obj = jsNative
 
     [<Emit("$0.trim($1)")>]
-    let recTrim (ns: obj) (seqNum: float) : obj = jsNative
+    let recTrim (_ns: obj) (_seqNum: float) : obj = jsNative
 
     // AppendInput.create(records, options) — options carries matchSeqNum / fencingToken.
     [<Emit("$0.create($1, $2)")>]
-    let inputCreate (ns: obj) (records: obj) (opts: obj) : obj = jsNative
+    let inputCreate (_ns: obj) (_records: obj) (_opts: obj) : obj = jsNative
 
     /// JS `== null` — true for both `null` and `undefined`.
     [<Emit("$0 == null")>]
-    let isNil (x: obj) : bool = jsNative
+    let isNil (_x: obj) : bool = jsNative
 
     // Async-iterator protocol, for consuming read sessions.
     [<Emit("$0[Symbol.asyncIterator]()")>]
-    let asyncIterator (x: obj) : obj = jsNative
+    let asyncIterator (_x: obj) : obj = jsNative
 
     [<Emit("$0.next()")>]
-    let iterNext (it: obj) : JS.Promise<obj> = jsNative
+    let iterNext (_it: obj) : JS.Promise<obj> = jsNative
 
     [<Emit("$0.done")>]
-    let iterDone (r: obj) : bool = jsNative
+    let iterDone (_r: obj) : bool = jsNative
 
     [<Emit("$0.value")>]
-    let iterValue (r: obj) : obj = jsNative
+    let iterValue (_r: obj) : obj = jsNative
 
     // Stop an async iterator early: releases the stream lock and cancels it.
     [<Emit("($0.return ? $0.return() : Promise.resolve({}))")>]
-    let iterReturn (it: obj) : JS.Promise<obj> = jsNative
+    let iterReturn (_it: obj) : JS.Promise<obj> = jsNative

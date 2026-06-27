@@ -2,643 +2,446 @@
 
 ## Status
 
-Foundational infrastructure design, aligned to the S2 KV-store and durable Yjs
-room patterns.
+Happy-path foundation design, aligned to the S2 KV demo.
 
-The earlier in-memory REPL proof ladder has been removed. The foundation should
-be proven against real S2 streams through scripts that load production modules.
+This document intentionally excludes output-producing invocation guarantees,
+operation ledgers, coordination claims, leases, fencing, checkpoint trimming,
+timers, schedules, workflow APIs, and full proof-runner work. The goal is to
+build the smallest real S2-backed state-view path we can validate with F#/Fable
+scripts.
 
 ## Objective
 
-Build the smallest F#/Fable substrate for durable coordination and replicated
-state on S2.
+Build the happy-path substrate for stream-derived state on S2:
 
-The first product is not a workflow engine. The first product is the F#/Fable
-analog of the S2 KV demo's core runtime pattern:
+```text
+S2 client
+  -> SubjectHistory
+    -> Deterministic fold
+      -> StateView
+        -> KvStore
+```
 
-- S2 stream as the authoritative shared log
-- append session for writes
-- tailing read session for local state catch-up
-- local state owned by one invocation-local event loop
-- eventual reads from current local state
-- strong reads through `checkTail` plus waiting for local catch-up
-- checkpoint/trim coordination with S2 fencing when replay cost matters
+`StateView` is the S2 KV-demo-style orchestrator: one host-local loop owns local
+state, tails an S2 stream, applies records into that state, serves eventual
+reads immediately, and serves strong reads by waiting until local state has
+applied the current S2 tail.
+
+`InvocationRuntime` is deferred. Pulsar-style at-least-once/effectively-once
+processing belongs to output-producing consumers, not to the in-memory state
+view path.
 
 Sources:
 
 - <https://s2.dev/blog/kv-store#part-2-designing-a-replicated-kv-store>
 - <https://github.com/s2-streamstore/s2-kv-demo/blob/main/src/main.rs>
+- <https://pulsar.apache.org/docs/4.2.x/functions-concepts/#processing-guarantees-and-subscription-types>
+- <https://pulsar.apache.org/docs/4.2.x/functions-concepts/>
 - <https://s2.dev/blog/durable-yjs-rooms>
-- <https://s2.dev/blog/distributed-ai-agents>
-- <https://martin.kleppmann.com/2016/02/08/how-to-do-distributed-locking.html>
 
 ## Dependency Map
 
-Use this as the mental model. Higher rows depend on lower rows.
-
 ```text
-L6  Workflow / objects / approvals / schedules
-    depends on: L5 + selected capabilities below
+L3  KvStore
+    depends on: L2 StateView
+    purpose:    first concrete proof of the S2 KV pattern
 
-L5  Operation ledger
-    depends on: L1 StreamLog
-    may use:    L4 Coordination, L4 Fencing for external effects
+L2  StateView
+    depends on: L1 SubjectHistory and L0 pull-based read sessions
+    purpose:    fold one typed stream into local state and serve reads
 
-L4  Coordination and fencing
-    depends on: L1 StreamLog and native S2 append preconditions / fencing
-    independent of: L2 StreamStateReplica and L3 KV
-
-L3  KV store
-    depends on: L2 StreamStateReplica
-    purpose:    first concrete proof of replicated state
-
-L2  StreamStateReplica
-    depends on: L1 StreamLog, S2 append session, S2 read session, checkTail
-    purpose:    invocation-local replica of one stream-derived state value
-
-L1  Typed StreamLog
-    depends on: existing src/S2/Client.fs
-    purpose:    typed append/read/checkTail/conditional append over S2
+L1  SubjectHistory
+    depends on: L0 S2 client
+    purpose:    one authoritative subject history over one S2 stream
 
 L0  S2 client
-    exists:     src/S2/Client.fs
-    purpose:    direct F#/Fable bindings over S2 primitives
+    exists:     src/S2/Client.fs and src/S2/Patterns.fs
 ```
 
-Important consequences:
+Deferred layers:
 
-- KV does not back coordination. KV is the first concrete state replica.
-- Coordination does not require KV. It can be a claim stream with conditional
-  append.
-- Fencing does not require KV. It requires a protected resource to enforce a
-  monotonic token.
-- Workflow concepts depend on these lower capabilities; they should not shape
-  the foundation.
+- output-producing `InvocationRuntime`
+- `EffectivelyOnce`
+- operation ledger
+- coordination claims
+- fencing
+- checkpoint and trim
+- Yjs-style checkpoint races
+- timers and wake indexes
+- workflow/object/service authoring APIs
 
-## Source Patterns
+## Reference Model
 
-### S2 KV Store
+The S2 KV demo is the reference for `StateView` and `KvStore`.
 
-The S2 KV post designs a multi-primary replicated store on three stream
-operations: append, read, and `checkTail`.
+What it establishes:
 
-Required pattern:
+- No progress stream exists for a view.
+- State is an in-memory map plus `applied_state`, an exclusive upper bound.
+- Startup begins from `recover_from` and replays the stream.
+- Writes append mutation records to S2.
+- Writes acknowledge when S2 acknowledges the append, before local apply.
+- That fast write ack is valid because `put` and `delete` do not return prior
+  values.
+- Eventual reads return current local state.
+- Strong reads call `checkTail`, then wait until local `AppliedTail >= tail`.
+- Pending strong reads are keyed by required tail and drained as records apply.
+- A bus-stand optimization can batch concurrent `checkTail` calls later.
 
-1. Encode each mutation as a log entry.
-2. Append the entry to S2 and wait for the S2 append acknowledgement before
-   acknowledging the write.
-3. Keep a tailing read session open.
-4. Apply every sequenced record to local materialized state.
-5. For eventual reads, return the current local state.
-6. For strong reads, call `checkTail`, then wait until local state has applied
-   that tail.
+Yjs rooms add the later checkpoint/fencing story:
 
-The implementation uses an event loop because local state, pending append acks,
-pending strong reads, and the tailing reader must be coordinated by one owner.
-This SDD calls that event-loop component `StreamStateReplica`.
+- load checkpoint plus sequence metadata
+- replay records from checkpoint sequence to tail
+- checkpoint/trim races require fencing
+- trim and fence reset should be committed consistently
 
-### Durable Yjs Rooms
+Those are deferred from the happy path.
 
-The durable Yjs post adds three foundation lessons:
+## Version Invariant
 
-1. A stream can be both storage and live transport: invocations append client
-   updates and tail the same stream for live updates.
-2. Recovery is checkpoint plus replay: load the latest checkpoint, then read
-   records from checkpoint sequence to current tail.
-3. Checkpoint and trim need coordination: multiple invocations may race to
-   checkpoint, so the checkpoint writer needs S2 fencing, and trim should be
-   committed consistently with the checkpoint decision.
+Use one convention everywhere:
 
-This does not mean checkpointing is foundational layer 2. It means the state
-replica must expose enough cursor information for a later checkpoint/trim
-component.
+```text
+Version = exclusive upper bound = next sequence number
+```
 
-## Required Capabilities
+Examples:
 
-### C1. Typed StreamLog
+- empty subject tail is `Version 0`
+- record `Seq 0` is applied when `AppliedTail >= Version 1`
+- S2 append ack `End.SeqNum` is the append batch end-exclusive version
+- S2 `checkTail` returns the current end-exclusive version
+- strong read waits for `AppliedTail >= checkedTail`
+
+Do not use `Version` to mean "last applied record sequence."
+
+## Capability C0: S2 Client Pull Cursor
+
+Layer: L0.
+
+The KV-demo orchestrator races command handling against the next tail record.
+That requires a pull-one read cursor. The existing `S2.iter` is useful for
+simple consumption, but it runs until completion, and a tailing read session may
+not complete. The existing `S2.take` cancels the session after a bounded read.
+
+Required production surface:
+
+```fsharp
+type ReadCursor
+
+module S2 =
+    val readCursor : ReadOptions -> Stream -> Async<ReadCursor>
+    val tryNext : ReadCursor -> Async<ReadRecord option>
+    val closeReadCursor : ReadCursor -> Async<unit>
+```
+
+This is load-bearing for `StateView`.
+
+## Capability C1: SubjectHistory
 
 Layer: L1.
 
-Depends on:
+`SubjectHistory` is the typed durable-kernel boundary over S2. It models one S2
+stream as one authoritative durable subject history. `StateView`, `KvStore`, and
+later durable-work kernels consume typed `SubjectHistory` records, not raw SDK
+records.
 
-- L0 `src/S2/Client.fs`
+### Existing Lower Surfaces
 
-Provides:
+`src/S2/Client.fs` provides:
 
-- typed event encoding over S2 text records
-- append
-- append with expected stream version
-- read from sequence
-- check tail
-- typed conflict mapping
+- `S2.append`
+- `S2.appendIfSeqNum`
+- `S2.tryAppendWith`
+- `S2.read`
+- `S2.checkTail`
+- `S2.appendSession`
+- `S2.readSession`
+- `S2.readCursor`
+- `S2.tryNext`
 
-Does not provide:
+`src/S2/Patterns.fs` provides typed producer/consumer wrappers with chunking,
+framing, reassembly, and dedupe headers. It is useful for large messages or
+message-level retry semantics, but it is not the foundation substrate.
 
-- local state
-- strong reads
-- coordination policy
-- workflow concepts
+Happy-path decision:
 
-Proposed module:
+- foundation `SubjectHistory` uses one durable record per raw S2 record with an
+  explicit codec
+- `S2Patterns` is opt-in later for large event payloads
+- `StateView` should call `SubjectHistory`, not `S2Patterns` directly
+- list-returning "read all from seq" helpers are not part of the kernel surface;
+  replay/materialization is cursor/fold based
 
-```text
-src/Foundation/StreamLog.fs
-```
-
-Proposed surface:
+### Proposed Surface
 
 ```fsharp
-type StreamId = StreamId of string
-type SeqNum = SeqNum of int64
-type StreamVersion = StreamVersion of int64
+type SubjectId = SubjectId of string
+type Seq = Seq of int64
+type Version = Version of int64
 
-type LogRecord<'event> =
-    { SeqNum: SeqNum
-      Event: 'event }
+type StoredRecord<'record> =
+    { Seq: Seq
+      Body: 'record }
 
-type AppendConflict =
-    { Expected: StreamVersion
-      Actual: StreamVersion }
+type ConflictRecord<'record> =
+    | Found of StoredRecord<'record>
+    | Unavailable
+    | LookupFailed of message: string
 
-type EventCodec<'event> =
-    { Encode: 'event -> string
-      Decode: string -> Result<'event, string> }
+type AppendConflict<'record> =
+    { Expected: Version
+      Actual: Version
+      Conflicting: ConflictRecord<'record> }
 
-module StreamLog =
+type AppendFailure<'record> =
+    | Conflict of AppendConflict<'record>
+    | Failed of S2Errors.S2Failure
+
+type Codec<'record> =
+    { Encode: 'record -> string
+      Decode: string -> Result<'record, string> }
+
+type Cursor<'record>
+
+module SubjectHistory =
+    val tail :
+        S2.Basin -> SubjectId -> Async<Version>
+
     val append :
-        S2.Basin -> EventCodec<'event> -> StreamId -> 'event list ->
-            Async<StreamVersion>
+        S2.Basin -> Codec<'record> -> SubjectId -> 'record list ->
+            Async<Version>
 
     val appendExpected :
-        S2.Basin -> EventCodec<'event> -> StreamId -> StreamVersion -> 'event list ->
-            Async<Result<StreamVersion, AppendConflict>>
+        S2.Basin -> Codec<'record> -> SubjectId -> Version -> 'record list ->
+            Async<Result<Version, AppendFailure<'record>>>
 
-    val readFrom :
-        S2.Basin -> EventCodec<'event> -> StreamId -> SeqNum ->
-            Async<Result<LogRecord<'event> list, string>>
+    val openCursor :
+        S2.Basin -> Codec<'record> -> SubjectId -> Seq ->
+            Async<Cursor<'record>>
 
-    val checkTail :
-        S2.Basin -> StreamId -> Async<StreamVersion>
+    val tryNext :
+        Cursor<'record> -> Async<Result<StoredRecord<'record> option, string>>
+
+    val foldTo :
+        S2.Basin -> Codec<'record> -> SubjectId -> Seq -> Version ->
+        'state -> ('state -> StoredRecord<'record> -> 'state) ->
+            Async<'state * Version>
 ```
 
-S2 lowering:
+`appendExpected` is for unowned or contended admission records: create-run,
+external delivery dedupe, and other single-index claims. It reports the winning
+record at the expected sequence when that exact record is still readable, but it
+does not infer idempotency from body equality. A caller that wants retry
+classification must put a unique attempt/command id in the record body and
+interpret conflicts at its own semantic layer.
 
-- `append` uses `S2.append`
-- `appendExpected` uses `S2.tryAppendWith` with `MatchSeqNum`
-- `readFrom` uses `S2.read` / later `readSession`
-- `checkTail` uses `S2.checkTail`
-- `SeqNumMismatch` maps to `AppendConflict`
+Non-conflict S2 failures stay typed as `S2Errors.S2Failure`; the foundation layer
+must not turn fencing-token loss or transient S2 errors into generic exceptions.
 
-### C2. StreamStateReplica
+`append` is for the owner-style path after a lane owner/fence has already been
+established. Fencing and owner-local reads are a later capability; this C1 only
+keeps the physical append/fold pieces honest.
+
+### Script First
+
+First proof:
+
+```text
+scripts/foundation-00-subject-history.fsx
+```
+
+Prove against real ephemeral S2 streams:
+
+- new subject starts at `Version 0`
+- append at expected version succeeds and advances the subject tail
+- stale append conflict returns expected version, actual version, and the
+  exact conflicting committed record when available
+- same-body stale append is still classified as conflict, not idempotent retry
+- different stale append is classified as conflict
+- deterministic fold applies committed records in order through a target version
+- follower read barrier is `tail` plus `foldTo` to that version
+
+Notes:
+
+- This proof deliberately does not cover fenced owner-local reads, lease expiry,
+  snapshot equivalence, or cross-subject command barriers.
+- S2 `matchSeqNum` and S2 fencing tokens are different primitives. The first
+  proof covers expected-sequence admission. Fenced owner writes are deferred.
+
+## Capability C2: StateView
 
 Layer: L2.
 
-This is the F#/Fable analog of the S2 KV demo's orchestrator task.
+`StateView` is the KV-demo orchestrator generalized over event and state types.
+It is not an `InvocationRuntime` specialization and it has no progress stream.
 
-Depends on:
-
-- L1 `StreamLog`
-- S2 append sessions
-- S2 read sessions
-- S2 `checkTail`
-
-Provides:
-
-- one invocation-local replica of state derived from one stream
-- write submission through S2 append session
-- local state catch-up through S2 read session
-- eventual reads
-- strong reads
-- applied-version cursor for checkpointing and observability
-
-Does not provide:
-
-- KV semantics by itself
-- cross-stream transactions
-- durable workflow execution
-- external side-effect exactly-once guarantees
-
-Proposed module:
-
-```text
-src/Foundation/StreamStateReplica.fs
-```
-
-Proposed concepts:
+### Proposed Surface
 
 ```fsharp
 type ReadConsistency =
     | Eventual
     | Strong
 
-type ReplicaState<'state> =
+type ViewState<'state> =
     { State: 'state
-      Applied: StreamVersion }
+      AppliedTail: Version }
 
-type StreamStateReplica<'event, 'state>
-```
+type StateView<'record, 'state>
 
-Proposed surface:
-
-```fsharp
-module StreamStateReplica =
+module StateView =
     val start :
         S2.Basin ->
-        EventCodec<'event> ->
-        StreamId ->
+        Codec<'record> ->
+        SubjectId ->
+        recoverFrom: Seq ->
         initial: 'state ->
-        apply: ('state -> 'event -> 'state) ->
-        Async<StreamStateReplica<'event, 'state>>
-
-    val append :
-        'event list -> StreamStateReplica<'event, 'state> ->
-            Async<Result<StreamVersion, string>>
+        apply: ('state -> StoredRecord<'record> -> 'state) ->
+            Async<StateView<'record, 'state>>
 
     val read :
-        ReadConsistency -> StreamStateReplica<'event, 'state> ->
-            Async<ReplicaState<'state>>
+        ReadConsistency -> StateView<'record, 'state> ->
+            Async<ViewState<'state>>
 
-    val stop :
-        StreamStateReplica<'event, 'state> -> Async<unit>
+    val stop : StateView<'record, 'state> -> Async<unit>
 ```
 
-Internal event loop responsibilities:
+Internal loop:
 
-- receive caller commands
-- submit write records through append session
-- pair pending write responses with append acknowledgements
-- tail the read session from the current applied sequence
-- decode and apply records to local state
-- track `Applied`
-- hold strong-read waiters until `Applied >= requiredTail`
-- optionally coalesce strong-read `checkTail` calls with the bus-stand pattern
+- open typed subject-history cursor from `recoverFrom`
+- fold every pulled record into local state
+- set `AppliedTail = record.Seq + 1`
+- serve eventual reads from current local state
+- for follower strong reads, call `SubjectHistory.tail`, then wait until
+  `AppliedTail >= checkedTail`
+- keep pending strong reads in required-tail order
+- drain pending reads as `AppliedTail` advances
 
-Strong read sequence:
+Write ack invariant:
+
+- writes acknowledge on durable S2 append, not on local apply
+- this is valid only for commands like `put` and `delete` that do not return
+  prior state
+- operations that must return prior state need a different path
+- owner-local linearizable reads are deferred until keyed ownership/fencing is
+  introduced; they require self-demotion when the lease expires
+
+### Script First
+
+Next proof:
 
 ```text
-caller -> checkTail(stream)
-caller -> replica.ReadStrong(requiredTail)
-replica waits until Applied >= requiredTail
-replica replies with state and Applied
+scripts/foundation-01-state-view.fsx
 ```
 
-This is the layer represented by the "Invocation 1 / Invocation 2 /
-Invocation 3" picture: each invocation may read and write the shared log, and
-each invocation's local state is only a replica of the log prefix it has
-applied.
+Prove:
 
-### C3. KV Store
+- local fold state updates from tail records
+- eventual read can observe current local state
+- strong read calls `checkTail` and waits for `AppliedTail`
+- write ack returns before local apply where the script can observe that window
+- second host can append; first host strong-read catches up to that append
+
+## Capability C3: KvStore
 
 Layer: L3.
 
-Depends on:
+`KvStore` is the first concrete `StateView`, aligned with the S2 KV demo.
 
-- L2 `StreamStateReplica`
-
-Provides:
-
-- the first concrete replicated state component
-- `put`, `delete`, and `get`
-- a proof that strong reads behave like the S2 KV post
-
-Does not provide:
-
-- a general database abstraction
-- coordination locks
-- workflow state model
-
-Proposed module:
-
-```text
-src/Foundation/KvStore.fs
-```
-
-Proposed surface:
+### Proposed Surface
 
 ```fsharp
 type KvEvent<'key, 'value> =
     | Put of key: 'key * value: 'value
     | Delete of key: 'key
 
-type KvStore<'key, 'value> =
-    StreamStateReplica<KvEvent<'key, 'value>, Map<'key, 'value>>
+type KvStore<'key, 'value>
 
 module KvStore =
     val start :
         S2.Basin ->
-        EventCodec<KvEvent<'key, 'value>> ->
-        StreamId ->
-        Async<KvStore<'key, 'value>>
+        Codec<KvEvent<'key, 'value>> ->
+        SubjectId ->
+        recoverFrom: Seq ->
+            Async<KvStore<'key, 'value>>
 
     val put :
         'key -> 'value -> KvStore<'key, 'value> ->
-            Async<Result<StreamVersion, string>>
+            Async<Version>
 
     val delete :
         'key -> KvStore<'key, 'value> ->
-            Async<Result<StreamVersion, string>>
+            Async<Version>
 
     val get :
         ReadConsistency -> 'key -> KvStore<'key, 'value> ->
-            Async<StreamVersion * 'value option>
+            Async<Version * 'value option>
 ```
 
-Why build this:
-
-- it is the direct analog of the S2 KV demo
-- it proves `StreamStateReplica` with a simple state model
-- later indexes are map-shaped: run metadata, claim views, wake candidates,
-  schedule buckets, host membership, and query views
-
-### C4. Coordination
-
-Layer: L4.
-
-Depends on:
-
-- L1 `StreamLog`
-- S2 conditional append
-
-Provides:
-
-- claim/admission decisions over a coordination stream
-- deterministic race resolution through stream ordering
-
-Does not depend on:
-
-- L2 `StreamStateReplica`
-- L3 `KvStore`
-
-Proposed module:
+Write path:
 
 ```text
-src/Foundation/Coordination.fs
+put/delete append KvEvent to the authoritative KV stream
+S2 append ack is the write ack
+StateView later applies the record through its read cursor
 ```
 
-Proposed surface:
-
-```fsharp
-type ClaimId = ClaimId of string
-type ActorId = ActorId of string
-
-type ClaimEvent =
-    | ClaimRecorded of claimId: ClaimId * actorId: ActorId
-
-type ClaimResult =
-    | Claimed of version: StreamVersion
-    | AlreadyClaimed
-    | LostRace of AppendConflict
-
-module Coordination =
-    val tryClaim :
-        S2.Basin -> EventCodec<ClaimEvent> -> StreamId -> ClaimId -> ActorId ->
-            Async<ClaimResult>
-```
-
-Semantics:
-
-1. Read coordination stream to determine whether the claim is already decided.
-2. Read the stream tail.
-3. Append `ClaimRecorded` with `MatchSeqNum = tail`.
-4. If conditional append loses, re-read before deciding what happened.
-
-### C5. Fencing And Checkpoint Lease
-
-Layer: L4.
-
-Depends on:
-
-- L1 `StreamLog`
-- native S2 fencing-token command records
-- native S2 trim command records
-
-May use:
-
-- L2 `StreamStateReplica` cursor information
-- C7 checkpoint storage
-
-Provides:
-
-- stale-writer protection for checkpoint/trim or other protected writes
-- the durable Yjs pattern for racing checkpoint writers
-
-Does not provide:
-
-- general mutual exclusion for arbitrary resources unless those resources
-  enforce the token
-
-Proposed module:
+Read path:
 
 ```text
-src/Foundation/Fencing.fs
+eventual get = local map now
+strong get   = checkTail + wait for StateView catch-up
 ```
 
-Proposed surface:
+## Deferred
 
-```fsharp
-type FenceToken = FenceToken of string
-
-type FenceLease =
-    { Token: FenceToken
-      ExpiresAtMillis: int64 }
-
-module Fencing =
-    val tryAcquire :
-        S2.Stream -> current: FenceToken option -> requested: FenceLease ->
-            Async<Result<FenceLease, string>>
-
-    val appendProtected :
-        S2.Stream -> FenceToken -> S2.Record list ->
-            Async<Result<S2.AppendAck, S2Errors.S2Failure>>
-
-    val releaseAndTrim :
-        S2.Stream -> FenceToken -> trimBefore: int64 ->
-            Async<Result<S2.AppendAck, S2Errors.S2Failure>>
-```
-
-Durable Yjs lesson:
-
-- checkpoint state is derived from a stream prefix
-- checkpoint writes can race
-- only the holder of the current fencing token should commit checkpoint/trim
-- trim and fence reset should be committed consistently, ideally in one S2
-  append batch of command records where S2 allows it
-
-### C6. Checkpoint
-
-Layer: L4.
-
-Depends on:
-
-- L2 `StreamStateReplica` cursor
-- L1 `StreamLog` for replay
-- C5 `Fencing` for checkpoint/trim coordination when multiple invocations race
-
-Provides:
-
-- faster recovery by storing a state snapshot plus applied stream version
-- replay-from-checkpoint to current tail
-
-Does not provide:
-
-- authority independent of the stream
-- correctness if replay from checkpoint to tail is skipped
-
-Proposed module:
-
-```text
-src/Foundation/Checkpoint.fs
-```
-
-Proposed surface:
-
-```fsharp
-type Checkpoint<'state> =
-    { State: 'state
-      Applied: StreamVersion }
-
-module Checkpoint =
-    val save :
-        StreamId -> Checkpoint<'state> -> Async<unit>
-
-    val loadLatest :
-        StreamId -> Async<Checkpoint<'state> option>
-
-    val recover :
-        S2.Basin ->
-        EventCodec<'event> ->
-        StreamId ->
-        apply: ('state -> 'event -> 'state) ->
-        Checkpoint<'state> option ->
-            Async<Result<ReplicaState<'state>, string>>
-```
-
-Storage decision is intentionally open:
-
-- first implementation can use a checkpoint stream if that keeps everything in
-  S2
-- object storage can be evaluated later if large snapshots need it
-
-### C7. Operation Ledger
-
-Layer: L5.
-
-Depends on:
-
-- L1 `StreamLog`
-
-May use:
-
-- C4 `Coordination` for admission
-- C5 `Fencing` or external idempotency keys for protected side effects
-
-Provides:
-
-- replay of completed operation results
-- a durable record that user code has already produced a result
-
-Does not provide:
-
-- exactly-once external side effects by itself
-
-Proposed module:
-
-```text
-src/Foundation/OperationLedger.fs
-```
-
-Proposed surface:
-
-```fsharp
-type OperationId = OperationId of string
-
-type OperationEvent<'result> =
-    | OperationStarted of OperationId
-    | OperationCompleted of OperationId * 'result
-    | OperationFailed of OperationId * string
-
-type OperationOutcome<'result> =
-    | Executed of 'result
-    | Replayed of 'result
-    | FailedPreviously of string
-    | InFlight
-
-module OperationLedger =
-    val runOnce :
-        S2.Basin ->
-        EventCodec<OperationEvent<'result>> ->
-        StreamId ->
-        OperationId ->
-        action: (unit -> Async<'result>) ->
-            Async<OperationOutcome<'result>>
-```
+- output-producing `InvocationRuntime`
+- Pulsar-style at-least-once/effectively-once processing
+- deterministic output ids
+- operation ledger
+- coordination claims
+- fencing
+- checkpoint and trim
+- Yjs-style checkpoint races
+- timers and wake indexes
+- workflow/object/service authoring APIs
+- full proof runner
 
 ## Initial Package Shape
 
 ```text
 src/
   Foundation/
-    StreamLog.fs
-    StreamStateReplica.fs
+    SubjectHistory.fs
+    StateView.fs
     KvStore.fs
-    Coordination.fs
-    Fencing.fs
-    Checkpoint.fs
-    OperationLedger.fs
 
 scripts/
-  foundation-00-stream-log.fsx
-  foundation-01-stream-state-replica.fsx
+  foundation-00-subject-history.fsx
+  foundation-01-state-view.fsx
   foundation-02-kv-store.fsx
-  foundation-03-coordination.fsx
-  foundation-04-fencing-checkpoint.fsx
-  foundation-05-operation-ledger.fsx
 ```
-
-Scripts must use real S2 streams. They may create ephemeral streams and delete
-them after the run. They should not introduce an in-memory fake backend.
 
 ## Build Order
 
-1. Harden `src/S2/Client.fs` only where foundation modules need missing S2
-   operations. Do not replace it.
-2. Implement `Foundation.StreamLog`.
-3. Implement `Foundation.StreamStateReplica` around append session, read
-   session, local state, pending append acks, and pending strong reads.
-4. Implement `Foundation.KvStore` as the first concrete replica.
-5. Prove two hosts: host A writes, host B strong-reads after `checkTail` and
-   catch-up.
-6. Implement `Foundation.Coordination` for claim streams.
-7. Implement `Foundation.Fencing` for checkpoint/trim protection.
-8. Implement `Foundation.Checkpoint` recovery: checkpoint plus replay to tail.
-9. Implement `Foundation.OperationLedger`.
+Each layer starts as a script proof, then promotes the stable code into `src/`.
 
-## What Higher-Level Workflow Gets Later
-
-After the foundation is proven:
-
-- run state is a stream-derived state replica or KV view
-- timers are records plus a derived due-time replica/index
-- schedules are records plus a derived due-bucket replica/index
-- approvals are external-event records plus idempotent delivery
-- wake indexes are derived state, not authority
-- services, virtual objects, and workflows are capability bundles over the same
-  lower layers
+1. Write `scripts/foundation-00-subject-history.fsx`; promote
+   `src/Foundation/SubjectHistory.fs`.
+2. Write `scripts/foundation-01-state-view.fsx`; promote
+   `src/Foundation/StateView.fs`.
+3. Write `scripts/foundation-02-kv-store.fsx`; promote
+   `src/Foundation/KvStore.fs`.
 
 ## Acceptance Criteria
 
-The foundation is ready for workflow ergonomics when:
+The happy-path foundation is ready for the next design pass when:
 
-1. `StreamLog` proves append, read, `checkTail`, and conditional append against
-   real S2.
-2. `StreamStateReplica` proves eventual read versus strong read across two host
-   instances.
-3. `KvStore` proves the exact S2 KV pattern: write ack after durable append,
-   eventual read may be stale, strong read catches up to checked tail.
-4. `Coordination` proves two hosts race for the same claim and only one wins.
-5. `Fencing` proves a stale checkpoint writer cannot commit with an old token.
-6. `Checkpoint` proves load checkpoint, replay to tail, and resume live reads.
-7. `OperationLedger` proves replay does not re-enter user code after recorded
-   completion.
-8. Every proof is an F#/Fable script using production modules and real S2
+1. L0 proves pull-one read cursor behavior against real S2.
+2. `SubjectHistory` proves expected-sequence append, conflict classification,
+   cursor-based fold, and follower catch-up against real S2.
+3. `StateView` proves eventual and strong reads over a KV-demo-style
+   orchestrator loop.
+4. `KvStore` proves the S2 KV pattern end to end.
+5. Every proof is an F#/Fable script using production modules and real S2
    streams.

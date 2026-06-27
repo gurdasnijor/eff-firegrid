@@ -20,13 +20,13 @@ module S2Errors =
     let private rangeNotSatisfiableError: obj = jsNative
 
     [<Emit("$1 instanceof $0")>]
-    let private isInstance (cls: obj) (e: obj) : bool = jsNative
+    let private isInstance (_cls: obj) (_e: obj) : bool = jsNative
 
     [<Emit("$0 == null")>]
-    let private isNil (x: obj) : bool = jsNative
+    let private isNil (_x: obj) : bool = jsNative
 
     [<Emit("(typeof $0 === 'number' && Number.isFinite($0))")>]
-    let private isFiniteNum (x: obj) : bool = jsNative
+    let private isFiniteNum (_x: obj) : bool = jsNative
 
     // Best-effort seq num from an error's `tail` (the field may be camelCase or wire snake_case).
     let private tailSeqNum (tail: obj) : int64 option =

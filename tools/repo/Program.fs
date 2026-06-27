@@ -114,6 +114,22 @@ module Program =
               "build_script"
               "--runScript" ]
 
+    let runFableScript (relPath: string) =
+        run "dotnet" [ "fable"; relPath; "--outDir"; "build_script"; "--runScript" ]
+
+    let actorOwnership () = runFableScript "scripts/actor-01-ownership.fsx"
+    let actorDurableSteps () = runFableScript "scripts/actor-02-durable-steps.fsx"
+    let actorSuspension () = runFableScript "scripts/actor-03-suspension.fsx"
+    let actorRuntime () = runFableScript "scripts/actor-04-runtime.fsx"
+    let actorErgonomic () = runFableScript "scripts/actor-05-ergonomic.fsx"
+
+    let actors () =
+        actorOwnership ()
+        actorDurableSteps ()
+        actorSuspension ()
+        actorRuntime ()
+        actorErgonomic ()
+
     let test () =
         run "dotnet" [ "fable"; "tests/Suite.fsx"; "--outDir"; "build_test" ]
         run "node" [ "build_test/Suite.js" ]
@@ -155,6 +171,12 @@ module Program =
         Target.create "FableSmoke" (fun _ -> fableSmoke ())
         Target.create "Play" (fun _ -> play ())
         Target.create "ScriptSubjectHistory" (fun _ -> scriptSubjectHistory ())
+        Target.create "ActorOwnership" (fun _ -> actorOwnership ())
+        Target.create "ActorDurableSteps" (fun _ -> actorDurableSteps ())
+        Target.create "ActorSuspension" (fun _ -> actorSuspension ())
+        Target.create "ActorRuntime" (fun _ -> actorRuntime ())
+        Target.create "ActorErgonomic" (fun _ -> actorErgonomic ())
+        Target.create "Actors" (fun _ -> actors ())
         Target.create "Test" (fun _ -> test ())
         Target.create "Bench" (fun _ -> bench ())
         Target.create "BenchE2E" (fun _ -> benchE2E ())
@@ -168,6 +190,12 @@ module Program =
         "RestoreTools" ==> "FableSmoke" |> ignore
         "RestoreTools" ==> "Play" |> ignore
         "RestoreTools" ==> "ScriptSubjectHistory" |> ignore
+        "RestoreTools" ==> "ActorOwnership" |> ignore
+        "RestoreTools" ==> "ActorDurableSteps" |> ignore
+        "RestoreTools" ==> "ActorSuspension" |> ignore
+        "RestoreTools" ==> "ActorRuntime" |> ignore
+        "RestoreTools" ==> "ActorErgonomic" |> ignore
+        "RestoreTools" ==> "Actors" |> ignore
         "RestoreTools" ==> "Test" |> ignore
         "RestoreTools" ==> "Bench" |> ignore
         "RestoreTools" ==> "BenchE2E" |> ignore

@@ -3,6 +3,7 @@
   "ignoreFiles": [
     "build/**",
     "build_test/**",
+    "build_proofs/**",
     "build_subject_history/**",
     "build_minimum/**"
   ],

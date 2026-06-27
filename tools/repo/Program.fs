@@ -51,8 +51,7 @@ module Program =
           "build"
           "build_test"
           "build_bench"
-          "build_script"
-          "build_scripts"
+          "build_proofs"
           "build_subject_history"
           "tools/repo/bin"
           "tools/repo/obj" ]
@@ -123,15 +122,13 @@ module Program =
     let play () =
         run "dotnet" [ "fable"; "repl.fsx"; "--outDir"; "build"; "--runScript" ]
 
-    let runScripts (proof: string option) =
-        run "dotnet" [ "fable"; "scripts/all.fsx"; "--outDir"; "build_scripts" ]
-
+    let proofs (proof: string option) =
         let env =
             match proof with
             | Some name -> [ "PROOF", name ]
             | None -> []
 
-        runWithEnv "node" [ "build_scripts/all.js" ] env
+        runWithEnv "dotnet" [ "fable"; "scripts/proofs.fsx"; "--outDir"; "build_proofs"; "--runScript" ] env
 
     let test () =
         run "dotnet" [ "fable"; "tests/Suite.fsx"; "--outDir"; "build_test" ]
@@ -151,6 +148,7 @@ module Program =
         lint ()
         fableSmoke ()
         test ()
+        proofs None
 
     [<EntryPoint>]
     let main argv =
@@ -175,8 +173,7 @@ module Program =
         Target.create "Lint" (fun _ -> lint ())
         Target.create "FableSmoke" (fun _ -> fableSmoke ())
         Target.create "Play" (fun _ -> play ())
-        Target.create "Scripts" (fun _ -> runScripts proof)
-        Target.create "ScriptSubjectHistory" (fun _ -> runScripts (Some "foundation-00-subject-history"))
+        Target.create "Proofs" (fun _ -> proofs proof)
         Target.create "Test" (fun _ -> test ())
         Target.create "Bench" (fun _ -> bench ())
         Target.create "BenchE2E" (fun _ -> benchE2E ())
@@ -189,8 +186,7 @@ module Program =
         "RestoreTools" ==> "Lint" |> ignore
         "RestoreTools" ==> "FableSmoke" |> ignore
         "RestoreTools" ==> "Play" |> ignore
-        "RestoreTools" ==> "Scripts" |> ignore
-        "RestoreTools" ==> "ScriptSubjectHistory" |> ignore
+        "RestoreTools" ==> "Proofs" |> ignore
         "RestoreTools" ==> "Test" |> ignore
         "RestoreTools" ==> "Bench" |> ignore
         "RestoreTools" ==> "BenchE2E" |> ignore

@@ -2,27 +2,39 @@
 
 ## Status
 
-Proposed. First milestone landed: the shared script harness
-(`scripts/_prelude.fsx`), the unified runner (`scripts/all.fsx`), and the
-`npm run scripts` entrypoint now back the foundation proofs, replacing the
-per-scratchpad copies of `uniq` / `check` / `section`. See
-[Replacing the .fsx Scratchpads](#replacing-the-fsx-scratchpads).
+Proposed. The verification surface is a **compiled, enforced proof suite**, not
+a REPL/script workflow. First slice landed: the harness and the first
+foundation proof are compiled modules under `src/Proofs/`, included in
+`eff-firegrid.fsproj`, so `dotnet build`, FS1182, and `fsharplint` enforce that
+proofs stay in sync with the production APIs they exercise. `npm run proofs`
+runs the suite; it is part of `npm run check` / CI. See
+[Compiled Proof Suite](#compiled-proof-suite).
+
+This is a deliberate reversal of the earlier REPL-first framing: the
+script-first promotion ladder was hard to systematize, enforce, and automate.
+A loose `.fsx` only fails at runtime, is not type-checked by the build, and is
+not linted. Moving proofs into the compiled project makes API drift a build
+error and makes the suite a first-class, CI-gated artifact.
 
 ## Context
 
 `eff-firegrid` is a Fable/F# system that wraps and composes the S2 JavaScript
-SDK into F#-native APIs. The current verification surface is intentionally
-REPL/script driven:
+SDK into F#-native APIs. The verification surface is a compiled proof suite that
+exercises production modules directly:
 
-- `repl.fsx` is the live S2 playground and ergonomics probe.
-- `tests/Suite.fsx` is a script-style integration suite.
+- `src/Proofs/` holds the proof harness and the proofs as compiled modules,
+  type-checked against the production surfaces they drive.
+- `repl.fsx` remains the live S2 playground and ergonomics probe (exploration,
+  not verification).
+- `tests/Suite.fsx` remains the S2 client integration suite.
 - `docs/foundational-sdd.md` defines the immediate path: prove the smallest
   useful durable-work kernel one property at a time.
 
-The next step is not a full proof runner. The next step is a REPL-friendly
-verification workflow that lets each durable layer start as a small script,
-exercise production modules directly, and only promote code into `src/` after
-the shape survives use.
+The next step is not a full deterministic simulator. The next step is to grow
+the proof suite top-down from the surfaces the SDD already specifies — write the
+production primitive to its SDD signature, then a compiled proof that drives it
+against real S2 — so each durable layer ships with an enforced proof rather than
+a scratchpad that someone has to remember to run.
 
 The later goal is an ergonomic proof/scenario runner for distributed behavior
 in `eff-firegrid`:
@@ -45,27 +57,34 @@ This design is inspired by:
 The TypeScript runner is useful later-stage prior art, but it should not be
 copied literally. For `eff-firegrid`, verification should grow in this order:
 
-1. REPL scripts over production modules.
-2. Tiny generic script helpers once repetition appears.
-3. Promoted foundation primitives in `src/Foundation`.
-4. Script suites that exercise those primitives.
-5. A proof runner only after the scripts reveal the right shape.
+1. A compiled, behavior-free harness (`src/Proofs/Harness.fs`) that the build
+   and linter enforce.
+2. Production primitives in `src/Foundation`, written to their SDD signatures.
+3. Compiled proofs in `src/Proofs` that drive those primitives against real S2,
+   registered once in `src/Proofs/Registry.fs`.
+4. Structured evidence (operation histories, domain events) added to the
+   harness when concurrency proofs need it.
+5. A full proof runner and deterministic simulation grown from the same harness
+   once the suite is broad enough to justify it.
 
 ## Goals
 
-1. Keep verification REPL-friendly and script-first.
+1. Make verification a compiled, enforced suite: proofs are type-checked by the
+   build and linter and gated in CI, so API drift is a build error.
 2. Exercise real `eff-firegrid` production modules, CLIs, and clients directly.
-3. Prefer one durable property per script section.
-4. Promote code into `src/` only after scripts prove the shape.
+3. Prefer one durable property per proof section.
+4. Build production primitives to their SDD signatures, then prove them.
 5. Make authoritative records and derived folds easy to print and inspect.
-6. Preserve a path toward operation histories and replayable counterexamples.
-7. Defer a full proof DSL until repeated script friction justifies it.
-8. Create a clean path toward seed-based deterministic simulation.
-9. Create a clean path toward Porcupine-style linearizability checking.
+6. Run the whole suite, or one proof by name, from a single command.
+7. Preserve a path toward operation histories and replayable counterexamples.
+8. Keep the harness generic and behavior-free so it can grow into a runner.
+9. Create a clean path toward seed-based deterministic simulation and
+   Porcupine-style linearizability checking.
 
 ## Non-Goals
 
-1. Do not build a proof runner in the first iteration.
+1. Do not build the full proof runner (resources/hosts/faults/reports DSL) in
+   the first iterations. Grow it from the compiled harness as the suite needs.
 2. Do not build a full deterministic simulator in the first iteration.
 3. Do not make SQL over traces the primary way to express application
    correctness.
@@ -80,19 +99,27 @@ copied literally. For `eff-firegrid`, verification should grow in this order:
 
 ## Core Idea
 
-Verification starts as a disciplined REPL workflow, not a framework.
+Verification is a compiled proof suite over production modules — enforced by the
+build, not a disciplined-but-optional REPL habit.
 
-Each script should:
+Each proof is a value (`Harness.Proof`) registered once in
+`src/Proofs/Registry.fs`. Its body should:
 
-1. State the durable property being explored.
+1. State the durable property being proved.
 2. Create isolated durable resources with readable names.
 3. Drive production modules directly.
 4. Print authoritative records and derived folds.
 5. Check the property with simple assertions.
-6. Clean up resources unless intentionally preserving a counterexample.
+6. Register cleanup; the runner tears resources down (unless `PRESERVE=1`
+   intentionally keeps a counterexample).
 
-The immediate unit is a script section, not a proof object. A proof runner can
-later formalize the same shape:
+Because proofs are compiled into `eff-firegrid.fsproj`, `dotnet build` and
+`fsharplint` check every proof against the real production signatures it calls.
+A renamed field or changed return type breaks the build, not a script someone
+runs by hand three weeks later.
+
+The immediate unit is a registered proof. A fuller proof runner can later
+formalize the same shape:
 
 1. **Resources**: scoped dependencies such as S2 streams and production host
    processes.
@@ -103,145 +130,113 @@ later formalize the same shape:
 4. **Verification**: check workload results, histories, invariants, SQL views,
    and optional linearizability models.
 
-## REPL-Friendly Workflow
+## Compiled Proof Suite
 
-Use a promotion ladder:
-
-```text
-scratch in repl.fsx
-  -> focused script in scripts/
-  -> repeated helper in scripts/_prelude.fsx
-  -> production primitive in src/
-  -> regression section in tests/Suite.fsx or scripts/all.fsx
-  -> later proof runner support only if the pattern stabilizes
-```
-
-The `scripts/` directory should be treated as executable design work. Scripts
-may be messy while an idea is forming, but each committed script should have a
-small property statement and remain runnable with `npm run script -- <name>` or
-an equivalent command.
-
-The only shared script helpers should be generic:
-
-- `proof` / `section` printing
-- `check` / `expectEqual`
-- unique name generation
-- cleanup registration
-- script config loading
-- optional preservation of failed resources
-
-Shared helpers must not contain workflow/object behavior, hidden stores,
-fake clients, event mappers, or alternate interpreters.
-
-## Replacing the .fsx Scratchpads
-
-The repo already had four `.fsx` scratchpads, and three of them each rolled
-their own copy of the same harness:
-
-- `tests/Suite.fsx` — `uniq` / `check` / `test` plus `passed` / `failed` /
-  `failures` globals and an `exit` tail.
-- `scripts/foundation-00-subject-history.fsx` — a `Proof` module with `uniq`,
-  `check`, `section`, `finish`, plus inline create/delete-on-failure cleanup.
-- `scripts/subject-history-playground.fsx` — its own ad-hoc scaffolding.
-- `repl.fsx` — a `section` wrapper (no checks; it is a tour, not a proof).
-
-That duplication is exactly what the proposal's `_prelude.fsx` exists to
-absorb. The replacement is deliberately small and behavior-free:
+Proofs are compiled F#, not loose scripts. The suite has three compiled pieces
+plus one thin launcher:
 
 ```text
-scripts/
-  _prelude.fsx   # the only shared harness: section/check/expectEqual/note,
-                 # uniq, cleanup registry, S2 config, runProofs (the runner)
-  foundation-00-subject-history.fsx   # a definition module exposing `proof`
-  all.fsx        # loads each proof module, runs them through one harness
+src/Proofs/
+  Harness.fs               # generic, behavior-free: Context, Proof, section,
+                           # check/expectEqual/note, uniq, cleanup registry,
+                           # S2 config, runProofs (the runner)
+  SubjectHistoryProof.fs   # a proof: `let proof = Harness.proof "..." (fun ctx -> ...)`
+  Registry.fs              # `let all = [ SubjectHistoryProof.proof; ... ]`
+
+scripts/proofs.fsx         # thin Fable launcher: #loads the compiled modules,
+                           # then `Harness.runProofs Registry.all`
 ```
 
-Key shape decisions that make the scratchpads collapse into one workflow:
+All three `src/Proofs/*.fs` files are in `eff-firegrid.fsproj`, so they ride the
+existing JS-interop compile path that `src/S2/*` already uses: `dotnet build`
+type-checks them (with `--warnaserror:1182`), and `fsharplint` lints them. The
+proofs run under Fable/Node — the S2 client is JS interop — so `scripts/proofs.fsx`
+is a thin launcher that loads the same modules and runs the registry. The
+launcher carries no proof logic; if it did, that logic would escape the build's
+enforcement.
 
-1. **A proof is a value, not a self-running script.** Each
-   `foundation-*.fsx` is now a `module` that exposes
-   `proof : Prelude.Proof` and performs no top-level execution. That is what
-   lets `all.fsx` `#load` several proofs and run them under a single shared
-   `Context` with one combined summary — a self-running script cannot be
-   composed because `#load` re-executes its tail.
-2. **One entrypoint, with a name filter.** `npm run scripts` runs every
-   committed proof; `PROOF=<substring>` (or `npm run script:subject-history`)
-   filters to one. There is no longer a bespoke `npm` target per script body.
-3. **Cleanup is registered, not inlined.** `Prelude.onCleanup` records a
-   teardown thunk next to the resource it frees. The runner runs them
-   last-in-first-out after the proof, so no proof needs its own
-   delete-on-success / delete-on-failure ceremony.
-4. **Counterexample preservation is a flag.** Cleanup runs by default; set
-   `PRESERVE=1` and, when the proof has failures, the runner skips teardown and
-   prints the resources it left behind for inspection.
+Why this beats the REPL/script approach on the three axes that were painful:
 
-`tests/Suite.fsx` and `repl.fsx` still run as before; the prelude is a strict
-superset of what they need, so they can adopt it next without changing
-behavior. They are intentionally left untouched in this milestone so the
-canonical `npm test` and `npm run play` paths stay green.
+1. **Systematize.** A proof is a `Harness.Proof` value registered once. Adding
+   one is a one-line edit to `Registry.fs`. There is no per-proof `npm` target,
+   no `#load` ordering to hand-maintain, no copy-pasted `uniq`/`check`/`section`.
+2. **Enforce.** Because proofs are compiled against the real production
+   modules, a renamed field or changed signature is a `dotnet build` failure.
+   A loose `.fsx` would only fail when someone remembered to run it.
+3. **Automate.** `npm run proofs` runs the whole suite (or `PROOF=<substring>`
+   for one) and exits non-zero on failure. It is wired into `npm run check`,
+   so CI runs it alongside `build`, `lint`, and `test`.
+
+Harness conventions:
+
+- **Cleanup is registered, not inlined.** `Harness.onCleanup` records a teardown
+  thunk next to the resource it frees; the runner runs them last-in-first-out.
+- **Counterexample preservation is a flag.** Cleanup runs by default; with
+  `PRESERVE=1`, a proof that fails keeps its resources and the runner prints
+  what it left behind.
+- **Config is environment-driven.** The basin defaults to `test-basin-885234`
+  and is overridable with `S2_BASIN`.
+
+The harness must stay generic: no workflow/object behavior, hidden stores, fake
+clients, event mappers, or alternate interpreters. `repl.fsx` (playground) and
+`tests/Suite.fsx` (S2 client integration suite) keep their own small scaffolds;
+they are not proofs and are intentionally left as-is.
 
 ## Recommended Repo Shape
+
+Near-term (exists now or next):
 
 ```text
 src/
   Foundation/
-    SubjectHistory.fs
-    StateView.fs
-    KvStore.fs
+    SubjectHistory.fs      # exists
+    StateView.fs           # next, to its SDD signature
+    KvStore.fs             # next, to its SDD signature
 
   Proofs/
-    Core.fs
-    Runtime.fs
-    Evidence.fs
-    Reports.fs
-    Hosts.fs
-    Faults.fs
-    Checkers.fs
-    Linearizability.fs
-    Sql.fs
+    Harness.fs             # exists — generic, behavior-free
+    SubjectHistoryProof.fs # exists — drives SubjectHistory
+    StateViewProof.fs      # next, alongside StateView
+    KvStoreProof.fs        # next, alongside KvStore
+    Registry.fs            # exists — the one list of all proofs
 
 scripts/
-  _prelude.fsx
-  foundation-00-subject-history.fsx
-  foundation-01-state-view.fsx
-  foundation-02-kv-store.fsx
-  all.fsx
+  proofs.fsx               # thin Fable launcher (no proof logic)
+```
 
-proofs/
-  Models/
-    Counter.fs
-    WorkflowRun.fs
-    Lease.fs
-    Register.fs
+Later-stage, as the suite grows and the harness needs to formalize (do not
+build ahead of need):
 
+```text
+src/Proofs/                # grown from Harness.fs as proofs demand it
+  Evidence.fs              # operation histories, domain events
+  Reports.fs               # JSON trial reports
+  Hosts.fs                 # process-host lifecycle
+  Faults.fs                # fault plans
+  Linearizability.fs       # model + checker adapter
+  Sql.fs                   # SQL views over evidence
+
+proofs/                    # distributed-behavior proofs + checker models
+  Models/{Counter,WorkflowRun,Lease,Register}.fs
   StoreHostCrashRestart.fs
   ObjectSerialization.fs
   RuntimeScheduleSweep.fs
   StaleOwnerFencing.fs
-  CapabilityAAtomicReplay.fs
   Main.fs
 ```
 
 `src/Foundation` is the near-term production target from
-`docs/foundational-sdd.md`. These modules should appear only after scripts prove
-the underlying shape against real S2 streams.
+`docs/foundational-sdd.md`. Each layer ships with a compiled proof in
+`src/Proofs` that drives it against real S2 streams.
 
-`scripts` is the immediate verification surface. Scripts import production
-modules from `src` and exercise them directly.
-
-`src/Proofs` and `proofs` are later-stage. Do not create them until the script
-suite has enough repetition to justify a runner.
-
-When `src/Proofs` eventually exists, it should know about concepts such as
-resources, hosts, operations, evidence, reports, faults, and checkers, but not
-about specific `eff-firegrid` workflow or object APIs.
-
-The `proofs` directory contains executable proof definitions and the CLI
-registry. It may contain checker models that define the intended sequential
-semantics of a subsystem, but it should not contain domain-specific support
-layers that wrap or simulate the system under test. A proof may import
-production modules from `src`, start production CLIs as processes, or call
-production HTTP/client surfaces, but it should not introduce a
+`src/Proofs/Harness.fs` is generic: it knows about resources, sections,
+checks, cleanup, and (later) hosts, operations, evidence, reports, faults, and
+checkers — never about specific `eff-firegrid` workflow or object APIs. The
+later `proofs/` directory holds distributed-behavior proof definitions and
+checker models that define the intended sequential semantics of a subsystem,
+but no domain-specific support layers that wrap or simulate the system under
+test. A proof may import production modules from `src`, start production CLIs as
+processes, or call production HTTP/client surfaces, but it must not introduce a
 verification-only workflow host, object client, runtime facade, or event
 adapter.
 
@@ -289,8 +284,8 @@ transport, scheduling, and fault points.
 
 ## Production Hooks When Needed
 
-To scale beyond simple scripts, production code eventually needs narrow
-dependencies that scripts and the later proof runner can control. Add these
+To scale beyond simple proofs, production code eventually needs narrow
+dependencies that proofs and the later proof runner can control. Add these
 only when a durable property needs them; do not pre-build a simulation surface
 before the kernel exists.
 
@@ -322,7 +317,7 @@ The runner can then block, crash, resume, or reorder exactly at that point.
 ## Evidence Model
 
 The eventual proof runner should record three evidence layers. Before the
-runner exists, scripts should print and optionally persist the same concepts in
+runner exists, proofs should print and optionally persist the same concepts in
 the simplest useful form.
 
 ### Operation Evidence
@@ -893,41 +888,35 @@ type FaultPlanStep =
 
 The report must include the exact fault plan used.
 
-## Script Commands
+## Proof Commands
 
-Commands preserve the current `npm run play` style. Because a proof is now a
-value rather than a self-running script, all proof execution goes through the
-unified `all.fsx` runner, and per-proof selection is a filter rather than a
-separate compiled script.
+One command runs the suite; selection is a filter, not a separate script.
 
 ```sh
-npm run play                     # repl.fsx tour (unchanged)
-npm run watch                    # fable watch on repl.fsx (unchanged)
-npm run scripts                  # compile + run every foundation proof
-npm run script:subject-history   # same runner, filtered to one proof
-npm test                         # tests/Suite.fsx integration suite (unchanged)
+npm run proofs                    # compile + run every registered proof
+PROOF=foundation-00 npm run proofs   # only proofs whose name contains the substring
+PRESERVE=1 npm run proofs            # keep failed proofs' resources for inspection
+S2_BASIN=my-basin npm run proofs     # override the default basin
 
-PROOF=foundation-00 npm run scripts   # ad-hoc substring filter
-PRESERVE=1 npm run scripts            # keep failed proofs' resources
-S2_BASIN=my-basin npm run scripts     # override the default basin
+npm run check                     # format + build + lint + fableSmoke + test + proofs
+npm run play                      # repl.fsx tour (unchanged)
+npm test                          # tests/Suite.fsx integration suite (unchanged)
 ```
 
-These are wired through the repo build tool (`tools/repo/Program.fs`), matching
-the existing `dotnet run --project tools/repo/Build.fsproj -- --target ...`
-pattern, so the underlying compile/run stays:
+`npm run proofs` is wired through the repo build tool (`tools/repo/Program.fs`)
+and runs the thin launcher with the proven single-file Fable path:
 
 ```sh
-dotnet fable scripts/all.fsx --outDir build_scripts
-node build_scripts/all.js          # PROOF / PRESERVE / S2_BASIN read from env
+dotnet fable scripts/proofs.fsx --outDir build_proofs --runScript
+# PROOF / PRESERVE / S2_BASIN are read from the environment
 ```
 
-The `Scripts` target also accepts `--proof <name>` directly (this is how the
-`ScriptSubjectHistory` target pins itself to one proof). `build_scripts/` is
-already in `.gitignore`. New foundation proofs are added by `#load`-ing them in
-`all.fsx` and appending their `proof` value to the `runProofs` list — no new
-`npm` target per script.
+The `Proofs` target also accepts `--proof <name>` directly. `build_proofs/` is
+in `.gitignore` and the linter's ignore list. Adding a proof is two edits: a new
+`src/Proofs/<Name>Proof.fs` (in the `.fsproj`) and one line in
+`src/Proofs/Registry.fs` — no new `npm` target.
 
-Later, after the proof runner exists, add commands such as:
+Later, after the proof runner grows a CLI, add commands such as:
 
 ```sh
 npm run proofs -- list
@@ -937,105 +926,93 @@ npm run proofs -- replay reports/store.host-crash-restart-123456.json
 
 ## First Milestone
 
-Build the smallest useful REPL verification harness.
+Stand up the compiled, enforced proof suite. **Done.**
 
 Deliverables:
 
-1. ✅ `scripts/_prelude.fsx` with generic `section`, `check`, `expectEqual`,
-   `note`, unique-name, cleanup, config, and `runProofs` helpers.
-2. ✅ `scripts/foundation-00-subject-history.fsx` proving expected-sequence
-   append, conflict classification, and cursor/fold behavior against real S2,
-   now expressed as a `proof` value on the shared harness.
-3. `scripts/foundation-01-state-view.fsx` proving eventual and strong reads
-   over the KV-demo-style orchestrator loop.
-4. `scripts/foundation-02-kv-store.fsx` proving the S2 KV pattern end to end.
-5. ✅ `scripts/all.fsx` that runs the current committed foundation proofs
-   through one harness with a combined summary.
-6. ✅ `npm run scripts` (all) and `npm run script:subject-history` (filtered),
-   wired through the repo build tool.
+1. ✅ `src/Proofs/Harness.fs` — generic `section` / `check` / `expectEqual` /
+   `note`, `uniq`, cleanup registry, `config`, and `runProofs`. Compiled into
+   `eff-firegrid.fsproj`.
+2. ✅ `src/Proofs/SubjectHistoryProof.fs` — proves expected-sequence append,
+   conflict classification, and cursor/fold behavior against real S2, driving
+   the production `SubjectHistory` surface.
+3. ✅ `src/Proofs/Registry.fs` — the single list of proofs.
+4. ✅ `scripts/proofs.fsx` — thin Fable launcher; `npm run proofs` (with
+   `PROOF` / `PRESERVE` / `S2_BASIN`) wired through the repo build tool.
+5. ✅ `npm run proofs` added to `npm run check`, so `dotnet build` (type-check
+   + FS1182), `fsharplint`, and the live-S2 run are all CI-gated.
 
-Deliverables 3 and 4 are the next step. They are not yet shipped because each
-needs its production module to drive — `src/Foundation/StateView.fs` and
-`src/Foundation/KvStore.fs` do not exist yet — and the proposal's own rule is
-that a proof must exercise a real production surface, not a verification-only
-substitute. Authoring them responsibly requires writing those primitives and
-running the proofs against live S2, so they are deferred to the next pass
-rather than stubbed.
-
-This milestone intentionally avoids a proof runner, process-host abstraction,
-full simulator, and linearizability checker.
+This milestone intentionally avoids the full proof runner, process-host
+abstraction, simulator, and linearizability checker.
 
 ## Second Milestone
 
-Promote script-proven primitives into production modules.
+Grow the foundation, top-down from the SDD, one proof per layer.
+
+For each layer: write the production primitive to its SDD signature, add a
+compiled proof that drives it against real S2, register it.
 
 Deliverables:
 
-1. `src/Foundation/SubjectHistory.fs`
-2. `src/Foundation/StateView.fs`
-3. `src/Foundation/KvStore.fs`
-4. Regression coverage in `tests/Suite.fsx` or `scripts/all.fsx`
+1. `src/Foundation/StateView.fs` + `src/Proofs/StateViewProof.fs` proving
+   eventual and strong reads over the KV-demo-style orchestrator loop.
+2. `src/Foundation/KvStore.fs` + `src/Proofs/KvStoreProof.fs` proving the S2 KV
+   pattern end to end.
+3. Both registered in `Registry.fs` and green under `npm run proofs`.
 
-Promotion rule: only move helper code from scripts into `src/Foundation` after
-the SDD layer cannot be expressed clearly without it or a later script needs the
-same production surface.
+Surface rule: a proof drives the production surface directly. If a proof needs
+an easier entrypoint, add it to the production module and use it from both the
+proof and real deployments — never a verification-only substitute.
 
 ## Third Milestone
 
 Prove the first deferred durable-work semantics after the happy path is stable.
+Each is a production primitive plus a compiled proof in the registry.
 
-Deliverables:
+1. Effectively-once output suppression.
+2. Output-producing invocation runtime.
+3. Minimal operation ledger proving recorded completion prevents re-execution.
+4. Coordination claim.
+5. Fencing / checkpoint.
+6. Timer / external wait, only after the state-view path is stable.
+7. Wake projection rebuild, only after state-view indexes exist.
 
-1. Effectively-once output suppression script and production primitive.
-2. Output-producing invocation runtime script and production primitive.
-3. Minimal operation ledger script proving recorded completion prevents
-   re-execution.
-4. Coordination claim script and production primitive.
-5. Fencing/checkpoint script and production primitive.
-6. Timer/external wait script only after the state-view path is stable.
-7. Wake projection rebuild script only after state-view indexes exist.
-
-These should remain REPL-friendly: print the records, print the fold, and make
-the property failure obvious without a separate report viewer.
+These stay readable: print the records, print the fold, make the failing check
+obvious without a separate report viewer.
 
 ## Fourth Milestone
 
-Introduce structured evidence only after scripts need it.
+Introduce structured evidence in the harness only after proofs need it.
 
-Deliverables:
-
-1. Minimal operation-history record type for concurrent script sections.
-2. Optional JSON report output for failed scripts.
+1. Operation-history record type for concurrent proof sections.
+2. JSON trial reports for failed proofs (`src/Proofs/Reports.fs`).
 3. Production instrumentation for durable records and folds if useful.
 4. F# sequential model API for one small model.
-5. Porcupine sidecar or native checker spike only after operation histories are
+5. Porcupine sidecar or native checker spike once operation histories are
    stable.
 
 ## Fifth Milestone
 
-Move toward a proof runner and deterministic simulation.
+Grow the harness into a proof runner and move toward deterministic simulation.
 
-Deliverables:
-
-1. Generic runner primitives extracted from repeated scripts.
-2. Process-host lifecycle only when production hosts exist.
-3. `IClock`, `IRandom`, and `IFaultPoint` integrated into production code.
-4. Controlled-process runtime mode.
-5. Seedable fault plan generator.
-6. Replay command that restores seed, resources, and fault plan.
+1. Resource/host primitives in `src/Proofs` once production hosts exist.
+2. `IClock`, `IRandom`, and `IFaultPoint` integrated into production code.
+3. Controlled-process runtime mode.
+4. Seedable fault plan generator.
+5. Replay command that restores seed, resources, and fault plan.
 
 ## Design Principles
 
-1. Scripts drive production APIs.
-2. Scripts print authoritative records and derived folds.
-3. Shared script helpers stay generic and behavior-free.
+1. Proofs are compiled and drive production APIs; the build enforces them.
+2. Proofs print authoritative records and derived folds.
+3. The shared harness stays generic and behavior-free.
 4. Operation history becomes first-class when concurrency proofs need it.
 5. Domain events become first-class when records/folds are not enough context.
 6. Traces are diagnostics and supplementary evidence.
 7. Faults happen at semantic boundaries where possible.
-8. Counterexample preservation starts as "do not clean up this stream" and only
-   later becomes structured reports.
-9. The runner starts after scripts stabilize, then evolves toward deterministic
+8. Counterexample preservation starts as "do not clean up this stream"
+   (`PRESERVE=1`) and only later becomes structured reports.
+9. The runner grows from the harness, then evolves toward deterministic
    simulation.
 10. Any eventual proof DSL should remain ordinary F# async code, not a separate
     language.
@@ -1044,36 +1021,41 @@ Deliverables:
 
 The first milestone settled the harness-shaped questions:
 
-1. **Smallest `_prelude.fsx`.** `section` / `check` / `expectEqual` / `note`,
-   `uniq`, a cleanup registry, `config` (the basin), and `runProofs`. Nothing
-   workflow- or S2-specific lives there; a proof is a `Name + (Context ->
-   Async<unit>)` value.
-2. **Preservation is opt-in.** Cleanup runs by default; `PRESERVE=1` keeps a
+1. **Compiled, not scripted.** Proofs live in `src/Proofs/*.fs`, compiled into
+   `eff-firegrid.fsproj`, so the build and linter enforce them. A proof is a
+   `Name + (Context -> Async<unit>)` value; `scripts/proofs.fsx` is only a
+   launcher.
+2. **Smallest harness.** `section` / `check` / `expectEqual` / `note`, `uniq`,
+   a cleanup registry, `config` (the basin), and `runProofs`. Nothing workflow-
+   or S2-specific lives in it.
+3. **Preservation is opt-in.** Cleanup runs by default; `PRESERVE=1` keeps a
    failed proof's resources and prints what was left behind. Defaulting to
    cleanup keeps reruns cheap; the flag is there for the rare counterexample.
-3. **Print first, JSON later.** Scripts print authoritative records and folds;
-   structured JSON evidence is deferred to the Fourth Milestone, where it is
-   introduced only once concurrency proofs need it.
-4. **Stream naming.** `"<prefix>-<epochMillis>-<counter>"` via `Prelude.uniq` —
+4. **Print first, JSON later.** Proofs print authoritative records and folds;
+   structured JSON evidence is deferred to the Fourth Milestone, introduced only
+   once concurrency proofs need it.
+5. **Stream naming.** `"<prefix>-<epochMillis>-<counter>"` via `Harness.uniq` —
    readable, unique per run, sortable, and easy to sweep by prefix. The basin
    defaults to `test-basin-885234` and is overridable with `S2_BASIN`.
 
 Still open, deferred to the milestone that needs them:
 
-5. When production hosts arrive, should scripts drive them through HTTP, CLI,
+6. When production hosts arrive, should proofs drive them through HTTP, CLI,
    direct Fable imports, or all of the above?
-6. Should the first linearizability checker be a Porcupine sidecar or a small
+7. Should the first linearizability checker be a Porcupine sidecar or a small
    native F# checker?
 
 ## Recommendation
 
-Start with REPL-friendly durable scripts, not a proof runner. Add a tiny
-generic `_prelude.fsx`, then build the `docs/foundational-sdd.md` layers in
-order: SubjectHistory, StateView, and KvStore.
+Make verification a compiled, enforced proof suite from the start — the harness
+and proofs live in `src/Proofs` and ride the build. Then grow the
+`docs/foundational-sdd.md` layers top-down: write each production primitive to
+its SDD signature, add a compiled proof that drives it against real S2, and
+register it. Order: SubjectHistory (done), StateView, KvStore.
 
-Use scripts to decide which APIs belong in `src/Foundation`. Once several
-scripts repeat the same generic orchestration, extract only that generic
-orchestration into runner primitives.
+Keep the harness generic. Add runner machinery — hosts, evidence, reports,
+faults, checkers — only when a proof needs it, extracting the generic part into
+`src/Proofs`, never domain-specific fakes.
 
 Do not start with a full deterministic simulator. Instead, design production
 boundaries so deterministic control can replace live behavior later: clock,

@@ -18,12 +18,15 @@ module Program =
 
     let root = AppContext.BaseDirectory |> DirectoryInfo |> findRoot
 
-    let run (fileName: string) (args: string list) =
+    let runWithEnv (fileName: string) (args: string list) (env: (string * string) list) =
         let psi = ProcessStartInfo()
         psi.FileName <- fileName
 
         for arg in args do
             psi.ArgumentList.Add(arg)
+
+        for (key, value) in env do
+            psi.Environment.[key] <- value
 
         psi.WorkingDirectory <- root
         psi.UseShellExecute <- false
@@ -33,6 +36,8 @@ module Program =
 
         if proc.ExitCode <> 0 then
             failwithf "Command failed (%d): %s %s" proc.ExitCode fileName (String.concat " " args)
+
+    let run (fileName: string) (args: string list) = runWithEnv fileName args []
 
     let deleteDir relative =
         let path = Path.Combine(root, relative)
@@ -62,6 +67,19 @@ module Program =
                 | "-t" when index + 1 < argv.Length -> argv.[index + 1]
                 | value when value.StartsWith("--target=", StringComparison.Ordinal) ->
                     value.Substring("--target=".Length)
+                | _ -> loop (index + 1)
+
+        loop 0
+
+    let selectedProof (argv: string array) =
+        let rec loop index =
+            if index >= argv.Length then
+                None
+            else
+                match argv.[index] with
+                | "--proof" when index + 1 < argv.Length -> Some argv.[index + 1]
+                | value when value.StartsWith("--proof=", StringComparison.Ordinal) ->
+                    Some(value.Substring("--proof=".Length))
                 | _ -> loop (index + 1)
 
         loop 0
@@ -105,14 +123,15 @@ module Program =
     let play () =
         run "dotnet" [ "fable"; "repl.fsx"; "--outDir"; "build"; "--runScript" ]
 
-    let scriptSubjectHistory () =
-        run
-            "dotnet"
-            [ "fable"
-              "scripts/foundation-00-subject-history.fsx"
-              "--outDir"
-              "build_script"
-              "--runScript" ]
+    let runScripts (proof: string option) =
+        run "dotnet" [ "fable"; "scripts/all.fsx"; "--outDir"; "build_scripts" ]
+
+        let env =
+            match proof with
+            | Some name -> [ "PROOF", name ]
+            | None -> []
+
+        runWithEnv "node" [ "build_scripts/all.js" ] env
 
     let test () =
         run "dotnet" [ "fable"; "tests/Suite.fsx"; "--outDir"; "build_test" ]
@@ -135,6 +154,8 @@ module Program =
 
     [<EntryPoint>]
     let main argv =
+        let proof = selectedProof argv
+
         let fakeContext: Context.FakeExecutionContext =
             { IsCached = false
               Context = ConcurrentDictionary<string, obj>()
@@ -154,7 +175,8 @@ module Program =
         Target.create "Lint" (fun _ -> lint ())
         Target.create "FableSmoke" (fun _ -> fableSmoke ())
         Target.create "Play" (fun _ -> play ())
-        Target.create "ScriptSubjectHistory" (fun _ -> scriptSubjectHistory ())
+        Target.create "Scripts" (fun _ -> runScripts proof)
+        Target.create "ScriptSubjectHistory" (fun _ -> runScripts (Some "foundation-00-subject-history"))
         Target.create "Test" (fun _ -> test ())
         Target.create "Bench" (fun _ -> bench ())
         Target.create "BenchE2E" (fun _ -> benchE2E ())
@@ -167,6 +189,7 @@ module Program =
         "RestoreTools" ==> "Lint" |> ignore
         "RestoreTools" ==> "FableSmoke" |> ignore
         "RestoreTools" ==> "Play" |> ignore
+        "RestoreTools" ==> "Scripts" |> ignore
         "RestoreTools" ==> "ScriptSubjectHistory" |> ignore
         "RestoreTools" ==> "Test" |> ignore
         "RestoreTools" ==> "Bench" |> ignore

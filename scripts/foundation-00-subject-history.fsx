@@ -3,8 +3,12 @@
 // Script-first proof for the lowest durable execution kernel boundary:
 // one S2 stream as one authoritative subject history.
 //
-// Run:
-//   dotnet fable scripts/foundation-00-subject-history.fsx --outDir build_script --runScript
+// This file is a *definition module*: it exposes `proof` and is executed by
+// scripts/all.fsx through the shared harness in scripts/_prelude.fsx. Run it:
+//
+//   npm run script:subject-history          # this proof only
+//   npm run scripts                         # this proof + every other one
+//   PRESERVE=1 npm run script:subject-history   # keep the stream on failure
 
 #r "nuget: Fable.Core, 5.1.0"
 #load "../src/S2/Interop.fs"
@@ -12,56 +16,12 @@
 #load "../src/S2/Client.fs"
 #load "../src/S2/Cli.fs"
 #load "../src/Foundation/SubjectHistory.fs"
+#load "_prelude.fsx"
 
-open Fable.Core
+module FoundationSubjectHistory
+
 open Eff
 open Eff.Foundation
-
-[<Emit("process.exit($0)")>]
-let exit (code: int) : unit = jsNative
-
-[<Emit("Date.now()")>]
-let now () : float = jsNative
-
-module Proof =
-    let mutable passed = 0
-    let mutable failed = 0
-    let mutable failures: string list = []
-    let mutable counter = 0
-
-    let uniq (prefix: string) : string =
-        counter <- counter + 1
-        sprintf "%s-%d-%d" prefix (int64 (now ())) counter
-
-    let check name condition =
-        if condition then
-            passed <- passed + 1
-            printfn "  ok  %s" name
-        else
-            failed <- failed + 1
-            failures <- name :: failures
-            printfn "  bad %s" name
-
-    let section name body =
-        async {
-            printfn "\n== %s ==" name
-
-            try
-                do! body
-            with e ->
-                failed <- failed + 1
-                failures <- (name + " threw: " + e.Message) :: failures
-                printfn "  bad threw: %s" e.Message
-        }
-
-    let finish () =
-        printfn "\n%d passed, %d failed" passed failed
-
-        if failed > 0 then
-            failures |> List.rev |> List.iter (printfn "  - %s")
-            exit 1
-        else
-            exit 0
 
 type WorkRecord =
     | Started of input: string
@@ -117,40 +77,41 @@ module WorkSnapshot =
                 Status = Waiting
                 PendingTimers = snapshot.PendingTimers |> Map.add opId wakeAt }
 
-let basinName = "test-basin-885234"
+let proof =
+    Prelude.proof "foundation-00-subject-history" (fun ctx ->
+        async {
+            let s2 = S2Cli.connect ()
+            let basin = s2 |> S2.basin Prelude.config.Basin
+            let subjectName = Prelude.uniq ctx "foundation-subject-history"
+            let subject = SubjectHistory.SubjectId subjectName
 
-let main =
-    async {
-        let s2 = S2Cli.connect ()
-        let basin = s2 |> S2.basin basinName
-        let subjectName = Proof.uniq "foundation-subject-history"
-        let subject = SubjectHistory.SubjectId subjectName
-        let mutable created = false
+            printfn "subject stream: %s/%s" Prelude.config.Basin subjectName
 
-        printfn "subject stream: %s/%s" basinName subjectName
-
-        try
             do! basin |> S2.createStream subjectName
-            created <- true
+
+            let deleteSubject () = basin |> S2.deleteStream subjectName
+            Prelude.onCleanup ctx (sprintf "delete stream %s" subjectName) deleteSubject
 
             do!
-                Proof.section
+                Prelude.section
+                    ctx
                     "expected-sequence append"
                     (async {
                         let! tail0 = SubjectHistory.tail basin subject
-                        Proof.check "new subject starts at v0" (tail0 = SubjectHistory.Version 0L)
+                        Prelude.check ctx "new subject starts at v0" (tail0 = SubjectHistory.Version 0L)
 
                         let! appended =
                             SubjectHistory.appendExpected basin WorkRecord.codec subject tail0 [ Started "invoice-123" ]
 
-                        Proof.check "append at expected v0 succeeds" (appended = Ok(SubjectHistory.Version 1L))
+                        Prelude.check ctx "append at expected v0 succeeds" (appended = Ok(SubjectHistory.Version 1L))
 
                         let! tail1 = SubjectHistory.tail basin subject
-                        Proof.check "tail advances to v1" (tail1 = SubjectHistory.Version 1L)
+                        Prelude.check ctx "tail advances to v1" (tail1 = SubjectHistory.Version 1L)
                     })
 
             do!
-                Proof.section
+                Prelude.section
+                    ctx
                     "conflict semantics"
                     (async {
                         let stale = SubjectHistory.Version 0L
@@ -160,17 +121,19 @@ let main =
 
                         match sameBody with
                         | Error(SubjectHistory.AppendFailure.Conflict details) ->
-                            Proof.check
+                            Prelude.check
+                                ctx
                                 "same-body stale append still conflicts"
                                 (details.Actual = SubjectHistory.Version 1L)
 
-                            Proof.check
+                            Prelude.check
+                                ctx
                                 "same-body conflict exposes winning record"
                                 (match details.Conflicting with
                                  | SubjectHistory.ConflictRecord.Found record ->
                                      record.Seq = SubjectHistory.Seq 0L && record.Body = Started "invoice-123"
                                  | _ -> false)
-                        | other -> Proof.check (sprintf "unexpected same-body outcome: %A" other) false
+                        | other -> Prelude.check ctx (sprintf "unexpected same-body outcome: %A" other) false
 
                         let! conflict =
                             SubjectHistory.appendExpected
@@ -182,18 +145,23 @@ let main =
 
                         match conflict with
                         | Error(SubjectHistory.AppendFailure.Conflict details) ->
-                            Proof.check "different stale append conflicts" (details.Actual = SubjectHistory.Version 1L)
+                            Prelude.check
+                                ctx
+                                "different stale append conflicts"
+                                (details.Actual = SubjectHistory.Version 1L)
 
-                            Proof.check
+                            Prelude.check
+                                ctx
                                 "conflict exposes winning record"
                                 (match details.Conflicting with
                                  | SubjectHistory.ConflictRecord.Found record -> record.Body = Started "invoice-123"
                                  | _ -> false)
-                        | other -> Proof.check (sprintf "unexpected conflict outcome: %A" other) false
+                        | other -> Prelude.check ctx (sprintf "unexpected conflict outcome: %A" other) false
                     })
 
             do!
-                Proof.section
+                Prelude.section
+                    ctx
                     "deterministic fold"
                     (async {
                         let! before = SubjectHistory.tail basin subject
@@ -207,7 +175,7 @@ let main =
                                   StepCompleted("reserve", "reservation-777")
                                   TimerRequested("timeout", "2026-06-28T00:00:00Z") ]
 
-                        Proof.check "owner-style append advanced by 3" (after = SubjectHistory.Version 4L)
+                        Prelude.check ctx "owner-style append advanced by 3" (after = SubjectHistory.Version 4L)
 
                         let! snapshot, applied =
                             SubjectHistory.foldTo
@@ -219,19 +187,22 @@ let main =
                                 WorkSnapshot.empty
                                 WorkSnapshot.apply
 
-                        Proof.check "fold applies through append tail" (applied = after)
+                        Prelude.check ctx "fold applies through append tail" (applied = after)
 
-                        Proof.check
+                        Prelude.check
+                            ctx
                             "fold records completed operation"
                             (snapshot.Completed.TryFind "reserve" = Some "reservation-777")
 
-                        Proof.check
+                        Prelude.check
+                            ctx
                             "fold records pending timer"
                             (snapshot.PendingTimers.TryFind "timeout" = Some "2026-06-28T00:00:00Z")
                     })
 
             do!
-                Proof.section
+                Prelude.section
+                    ctx
                     "follower read barrier"
                     (async {
                         let! checkedTail = SubjectHistory.tail basin subject
@@ -246,26 +217,7 @@ let main =
                                 WorkSnapshot.empty
                                 WorkSnapshot.apply
 
-                        Proof.check "follower catches up to checked tail" (applied = checkedTail)
-                        Proof.check "follower observes folded state" (snapshot.Status = Waiting)
+                        Prelude.check ctx "follower catches up to checked tail" (applied = checkedTail)
+                        Prelude.check ctx "follower observes folded state" (snapshot.Status = Waiting)
                     })
-
-            do! basin |> S2.deleteStream subjectName
-            created <- false
-            Proof.finish ()
-        with e ->
-            printfn "\nfatal: %s" e.Message
-
-            if created then
-                try
-                    do! basin |> S2.deleteStream subjectName
-                    printfn "deleted %s after failure" subjectName
-                with cleanup ->
-                    printfn "cleanup failed: %s" cleanup.Message
-
-            Proof.failed <- Proof.failed + 1
-            Proof.failures <- ("fatal: " + e.Message) :: Proof.failures
-            Proof.finish ()
-    }
-
-main |> Async.StartImmediate
+        })

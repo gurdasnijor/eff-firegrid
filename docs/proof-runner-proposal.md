@@ -2,7 +2,11 @@
 
 ## Status
 
-Proposed.
+Proposed. First milestone landed: the shared script harness
+(`scripts/_prelude.fsx`), the unified runner (`scripts/all.fsx`), and the
+`npm run scripts` entrypoint now back the foundation proofs, replacing the
+per-scratchpad copies of `uniq` / `check` / `section`. See
+[Replacing the .fsx Scratchpads](#replacing-the-fsx-scratchpads).
 
 ## Context
 
@@ -128,6 +132,53 @@ The only shared script helpers should be generic:
 
 Shared helpers must not contain workflow/object behavior, hidden stores,
 fake clients, event mappers, or alternate interpreters.
+
+## Replacing the .fsx Scratchpads
+
+The repo already had four `.fsx` scratchpads, and three of them each rolled
+their own copy of the same harness:
+
+- `tests/Suite.fsx` — `uniq` / `check` / `test` plus `passed` / `failed` /
+  `failures` globals and an `exit` tail.
+- `scripts/foundation-00-subject-history.fsx` — a `Proof` module with `uniq`,
+  `check`, `section`, `finish`, plus inline create/delete-on-failure cleanup.
+- `scripts/subject-history-playground.fsx` — its own ad-hoc scaffolding.
+- `repl.fsx` — a `section` wrapper (no checks; it is a tour, not a proof).
+
+That duplication is exactly what the proposal's `_prelude.fsx` exists to
+absorb. The replacement is deliberately small and behavior-free:
+
+```text
+scripts/
+  _prelude.fsx   # the only shared harness: section/check/expectEqual/note,
+                 # uniq, cleanup registry, S2 config, runProofs (the runner)
+  foundation-00-subject-history.fsx   # a definition module exposing `proof`
+  all.fsx        # loads each proof module, runs them through one harness
+```
+
+Key shape decisions that make the scratchpads collapse into one workflow:
+
+1. **A proof is a value, not a self-running script.** Each
+   `foundation-*.fsx` is now a `module` that exposes
+   `proof : Prelude.Proof` and performs no top-level execution. That is what
+   lets `all.fsx` `#load` several proofs and run them under a single shared
+   `Context` with one combined summary — a self-running script cannot be
+   composed because `#load` re-executes its tail.
+2. **One entrypoint, with a name filter.** `npm run scripts` runs every
+   committed proof; `PROOF=<substring>` (or `npm run script:subject-history`)
+   filters to one. There is no longer a bespoke `npm` target per script body.
+3. **Cleanup is registered, not inlined.** `Prelude.onCleanup` records a
+   teardown thunk next to the resource it frees. The runner runs them
+   last-in-first-out after the proof, so no proof needs its own
+   delete-on-success / delete-on-failure ceremony.
+4. **Counterexample preservation is a flag.** Cleanup runs by default; set
+   `PRESERVE=1` and, when the proof has failures, the runner skips teardown and
+   prints the resources it left behind for inspection.
+
+`tests/Suite.fsx` and `repl.fsx` still run as before; the prelude is a strict
+superset of what they need, so they can adopt it next without changing
+behavior. They are intentionally left untouched in this milestone so the
+canonical `npm test` and `npm run play` paths stay green.
 
 ## Recommended Repo Shape
 
@@ -844,32 +895,37 @@ The report must include the exact fault plan used.
 
 ## Script Commands
 
-Near-term commands should preserve the current `npm run play` style.
+Commands preserve the current `npm run play` style. Because a proof is now a
+value rather than a self-running script, all proof execution goes through the
+unified `all.fsx` runner, and per-proof selection is a filter rather than a
+separate compiled script.
 
 ```sh
-npm run play
-npm run watch
-npm run script:subject-history
-npm run script:kv-store
-npm run scripts
-npm test
+npm run play                     # repl.fsx tour (unchanged)
+npm run watch                    # fable watch on repl.fsx (unchanged)
+npm run scripts                  # compile + run every foundation proof
+npm run script:subject-history   # same runner, filtered to one proof
+npm test                         # tests/Suite.fsx integration suite (unchanged)
+
+PROOF=foundation-00 npm run scripts   # ad-hoc substring filter
+PRESERVE=1 npm run scripts            # keep failed proofs' resources
+S2_BASIN=my-basin npm run scripts     # override the default basin
 ```
 
-Recommended `package.json` additions:
+These are wired through the repo build tool (`tools/repo/Program.fs`), matching
+the existing `dotnet run --project tools/repo/Build.fsproj -- --target ...`
+pattern, so the underlying compile/run stays:
 
-```json
-{
-  "scripts": {
-    "script:subject-history": "dotnet fable scripts/foundation-00-subject-history.fsx --outDir build_script --runScript",
-    "script:state-view": "dotnet fable scripts/foundation-01-state-view.fsx --outDir build_script --runScript",
-    "script:kv-store": "dotnet fable scripts/foundation-02-kv-store.fsx --outDir build_script --runScript",
-    "scripts": "dotnet fable scripts/all.fsx --outDir build_scripts && node build_scripts/all.js"
-  }
-}
+```sh
+dotnet fable scripts/all.fsx --outDir build_scripts
+node build_scripts/all.js          # PROOF / PRESERVE / S2_BASIN read from env
 ```
 
-Add `build_script/` and `build_scripts/` to `.gitignore` if those out
-directories are used.
+The `Scripts` target also accepts `--proof <name>` directly (this is how the
+`ScriptSubjectHistory` target pins itself to one proof). `build_scripts/` is
+already in `.gitignore`. New foundation proofs are added by `#load`-ing them in
+`all.fsx` and appending their `proof` value to the `runProofs` list — no new
+`npm` target per script.
 
 Later, after the proof runner exists, add commands such as:
 
@@ -885,15 +941,26 @@ Build the smallest useful REPL verification harness.
 
 Deliverables:
 
-1. `scripts/_prelude.fsx` with generic `section`, `check`, unique-name, and
-   cleanup helpers.
-2. `scripts/foundation-00-subject-history.fsx` proving expected-sequence
-   append, conflict classification, and cursor/fold behavior against real S2.
+1. ✅ `scripts/_prelude.fsx` with generic `section`, `check`, `expectEqual`,
+   `note`, unique-name, cleanup, config, and `runProofs` helpers.
+2. ✅ `scripts/foundation-00-subject-history.fsx` proving expected-sequence
+   append, conflict classification, and cursor/fold behavior against real S2,
+   now expressed as a `proof` value on the shared harness.
 3. `scripts/foundation-01-state-view.fsx` proving eventual and strong reads
    over the KV-demo-style orchestrator loop.
 4. `scripts/foundation-02-kv-store.fsx` proving the S2 KV pattern end to end.
-5. `scripts/all.fsx` that runs the current committed foundation scripts.
-6. `package.json` commands for one script and all scripts.
+5. ✅ `scripts/all.fsx` that runs the current committed foundation proofs
+   through one harness with a combined summary.
+6. ✅ `npm run scripts` (all) and `npm run script:subject-history` (filtered),
+   wired through the repo build tool.
+
+Deliverables 3 and 4 are the next step. They are not yet shipped because each
+needs its production module to drive — `src/Foundation/StateView.fs` and
+`src/Foundation/KvStore.fs` do not exist yet — and the proposal's own rule is
+that a proof must exercise a real production surface, not a verification-only
+substitute. Authoring them responsibly requires writing those primitives and
+running the proofs against live S2, so they are deferred to the next pass
+rather than stubbed.
 
 This milestone intentionally avoids a proof runner, process-host abstraction,
 full simulator, and linearizability checker.
@@ -973,16 +1040,26 @@ Deliverables:
 10. Any eventual proof DSL should remain ordinary F# async code, not a separate
     language.
 
-## Open Questions
+## Resolved Decisions
 
-1. What is the smallest `_prelude.fsx` that avoids repetition without becoming
-   a framework?
-2. Should script failures preserve streams by default, or should preservation
-   require an explicit flag?
-3. Should scripts write lightweight JSON evidence immediately, or only print
-   records/folds until that becomes painful?
-4. How should scripts name streams so they are readable, unique, and easy to
-   clean?
+The first milestone settled the harness-shaped questions:
+
+1. **Smallest `_prelude.fsx`.** `section` / `check` / `expectEqual` / `note`,
+   `uniq`, a cleanup registry, `config` (the basin), and `runProofs`. Nothing
+   workflow- or S2-specific lives there; a proof is a `Name + (Context ->
+   Async<unit>)` value.
+2. **Preservation is opt-in.** Cleanup runs by default; `PRESERVE=1` keeps a
+   failed proof's resources and prints what was left behind. Defaulting to
+   cleanup keeps reruns cheap; the flag is there for the rare counterexample.
+3. **Print first, JSON later.** Scripts print authoritative records and folds;
+   structured JSON evidence is deferred to the Fourth Milestone, where it is
+   introduced only once concurrency proofs need it.
+4. **Stream naming.** `"<prefix>-<epochMillis>-<counter>"` via `Prelude.uniq` —
+   readable, unique per run, sortable, and easy to sweep by prefix. The basin
+   defaults to `test-basin-885234` and is overridable with `S2_BASIN`.
+
+Still open, deferred to the milestone that needs them:
+
 5. When production hosts arrive, should scripts drive them through HTTP, CLI,
    direct Fable imports, or all of the above?
 6. Should the first linearizability checker be a Porcupine sidecar or a small

@@ -5,11 +5,21 @@
   "type": "module",
   "description": "F#/Fable bindings + playground for the S2 (s2.dev) streaming SDK",
   "scripts": {
+    "prepare": "git config core.hooksPath tools/hooks || true",
     "play": "dotnet fable repl.fsx --outDir build --runScript",
     "watch": "dotnet fable watch repl.fsx --outDir build --runScript",
-    "test": "dotnet fable tests/Suite.fsx --outDir build_test && node build_test/Suite.js"
+    "test": "dotnet fable tests/Suite.fsx --outDir build_test && node build_test/Suite.js",
+    "format": "dotnet fantomas src tests benchmarks repl.fsx",
+    "format:check": "dotnet fantomas --check src tests benchmarks repl.fsx",
+    "lint": "dotnet fsharplint lint --lint-config fsharplint.json eff-firegrid.fsproj",
+    "check": "bash tools/check.sh",
+    "bench": "dotnet fable benchmarks/Micro.fsx --outDir build_bench && node build_bench/Micro.js"
   },
   "dependencies": {
-    "@s2-dev/streamstore": "^0.24.1"
+    "@s2-dev/streamstore": "^0.24.1",
+    "@s2-dev/streamstore-patterns": "^2.1.3"
+  },
+  "devDependencies": {
+    "mitata": "^1.0.34"
   }
 }

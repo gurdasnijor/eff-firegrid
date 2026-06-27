@@ -1,0 +1,15 @@
+{
+  "$schema": "https://raw.githubusercontent.com/fsprojects/FSharpLint/main/src/FSharpLint.Core/Configuration/FSharpLint.schema.json",
+  "ignoreFiles": [
+    "build/**",
+    "build_test/**"
+  ],
+
+  "//": "Naming rules muted where they fight Fable JS interop / our conventions.",
+  "GenericTypesNames": { "enabled": false },
+  "MemberNames": { "enabled": false },
+  "InterfaceNames": { "enabled": false },
+  "PublicValuesNames": { "enabled": false },
+  "PrivateValuesNames": { "enabled": false },
+  "InternalValuesNames": { "enabled": false }
+}

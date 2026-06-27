@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Autoformat staged F# files with Fantomas, then re-stage them.
+# Activated by the `prepare` npm script (sets core.hooksPath to tools/hooks).
+set -uo pipefail
+
+files=$(git diff --cached --name-only --diff-filter=ACM | grep -E '\.(fs|fsx|fsi)$' || true)
+[ -z "$files" ] && exit 0
+
+if ! command -v dotnet >/dev/null 2>&1; then
+  echo "pre-commit: dotnet not found; skipping F# autoformat." >&2
+  exit 0
+fi
+
+echo "pre-commit: formatting staged F# files with Fantomas…"
+# shellcheck disable=SC2086
+if dotnet fantomas $files >/dev/null 2>&1; then
+  # shellcheck disable=SC2086
+  git add $files
+else
+  echo "pre-commit: Fantomas failed. Run 'dotnet tool restore' and 'npm run format', then retry." >&2
+  exit 1
+fi

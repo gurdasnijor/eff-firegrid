@@ -9,79 +9,96 @@ open Fable.Core.JsInterop
 /// ergonomic `S2` module (see Client.fs), never these raw shapes.
 module internal Interop =
 
-    type [<AllowNullLiteral>] IStreamPosition =
+    [<AllowNullLiteral>]
+    type IStreamPosition =
         abstract seqNum: float
         abstract timestamp: DateTime
 
-    type [<AllowNullLiteral>] IAppendAck =
+    [<AllowNullLiteral>]
+    type IAppendAck =
         abstract start: IStreamPosition
         abstract ``end``: IStreamPosition
         abstract tail: IStreamPosition
 
-    type [<AllowNullLiteral>] IReadRecord =
+    [<AllowNullLiteral>]
+    type IReadRecord =
         abstract seqNum: float
         abstract body: string
         abstract headers: string[][]
         abstract timestamp: DateTime
 
-    type [<AllowNullLiteral>] IReadBatch =
+    [<AllowNullLiteral>]
+    type IReadBatch =
         abstract records: IReadRecord[]
         abstract tail: IStreamPosition
 
-    type [<AllowNullLiteral>] ITailResponse =
+    [<AllowNullLiteral>]
+    type ITailResponse =
         abstract tail: IStreamPosition
 
-    type [<AllowNullLiteral>] IStreamInfo =
+    [<AllowNullLiteral>]
+    type IStreamInfo =
         abstract name: string
         abstract createdAt: DateTime
         abstract deletedAt: DateTime
 
-    type [<AllowNullLiteral>] IBasinInfo =
+    [<AllowNullLiteral>]
+    type IBasinInfo =
         abstract name: string
         abstract createdAt: DateTime
         abstract deletedAt: DateTime
 
-    type [<AllowNullLiteral>] IListStreams =
+    [<AllowNullLiteral>]
+    type IListStreams =
         abstract streams: IStreamInfo[]
         abstract hasMore: bool
 
-    type [<AllowNullLiteral>] IListBasins =
+    [<AllowNullLiteral>]
+    type IListBasins =
         abstract basins: IBasinInfo[]
         abstract hasMore: bool
 
     // Config shapes (SDK camelCase format). Nullable scalars typed as obj.
-    type [<AllowNullLiteral>] IRetentionPolicy =
+    [<AllowNullLiteral>]
+    type IRetentionPolicy =
         abstract ageSecs: obj
         abstract infinite: obj
 
-    type [<AllowNullLiteral>] IDeleteOnEmpty =
+    [<AllowNullLiteral>]
+    type IDeleteOnEmpty =
         abstract minAgeSecs: obj
 
-    type [<AllowNullLiteral>] ITimestamping =
+    [<AllowNullLiteral>]
+    type ITimestamping =
         abstract mode: obj
         abstract uncapped: obj
 
-    type [<AllowNullLiteral>] IStreamConfig =
+    [<AllowNullLiteral>]
+    type IStreamConfig =
         abstract deleteOnEmpty: IDeleteOnEmpty
         abstract retentionPolicy: IRetentionPolicy
         abstract storageClass: obj
         abstract timestamping: ITimestamping
 
-    type [<AllowNullLiteral>] IBasinConfig =
+    [<AllowNullLiteral>]
+    type IBasinConfig =
         abstract createStreamOnAppend: obj
         abstract createStreamOnRead: obj
         abstract defaultStreamConfig: IStreamConfig
         abstract streamCipher: obj
 
-    type [<AllowNullLiteral>] IEnsureStreamResult =
+    [<AllowNullLiteral>]
+    type IEnsureStreamResult =
         abstract result: string
         abstract stream: IStreamInfo
 
-    type [<AllowNullLiteral>] IEnsureBasinResult =
+    [<AllowNullLiteral>]
+    type IEnsureBasinResult =
         abstract result: string
         abstract basin: IBasinInfo
 
-    type [<AllowNullLiteral>] IStreamsMgr =
+    [<AllowNullLiteral>]
+    type IStreamsMgr =
         abstract create: args: obj -> JS.Promise<obj>
         abstract ensure: args: obj -> JS.Promise<IEnsureStreamResult>
         abstract delete: args: obj -> JS.Promise<obj>
@@ -89,7 +106,8 @@ module internal Interop =
         abstract reconfigure: args: obj -> JS.Promise<IStreamConfig>
         abstract list: args: obj -> JS.Promise<IListStreams>
 
-    type [<AllowNullLiteral>] IBasinsMgr =
+    [<AllowNullLiteral>]
+    type IBasinsMgr =
         abstract create: args: obj -> JS.Promise<IBasinInfo>
         abstract ensure: args: obj -> JS.Promise<IEnsureBasinResult>
         abstract delete: args: obj -> JS.Promise<obj>
@@ -97,18 +115,22 @@ module internal Interop =
         abstract reconfigure: args: obj -> JS.Promise<IBasinConfig>
         abstract list: args: obj -> JS.Promise<IListBasins>
 
-    type [<AllowNullLiteral>] IBatchSubmitTicket =
+    [<AllowNullLiteral>]
+    type IBatchSubmitTicket =
         abstract ack: unit -> JS.Promise<IAppendAck>
 
-    type [<AllowNullLiteral>] IAppendSession =
+    [<AllowNullLiteral>]
+    type IAppendSession =
         abstract submit: input: obj -> JS.Promise<IBatchSubmitTicket>
         abstract close: unit -> JS.Promise<unit>
         abstract lastAckedPosition: unit -> IAppendAck
 
-    type [<AllowNullLiteral>] IReadSession =
+    [<AllowNullLiteral>]
+    type IReadSession =
         abstract cancel: unit -> JS.Promise<unit>
 
-    type [<AllowNullLiteral>] IStream =
+    [<AllowNullLiteral>]
+    type IStream =
         abstract name: string
         abstract append: input: obj -> JS.Promise<IAppendAck>
         abstract read: input: obj -> JS.Promise<IReadBatch>
@@ -116,14 +138,60 @@ module internal Interop =
         abstract appendSession: opts: obj -> JS.Promise<IAppendSession>
         abstract readSession: input: obj * options: obj -> JS.Promise<IReadSession>
 
-    type [<AllowNullLiteral>] IBasin =
+    [<AllowNullLiteral>]
+    type IBasin =
         abstract name: string
         abstract streams: IStreamsMgr
         abstract stream: name: string -> IStream
 
-    type [<AllowNullLiteral>] IS2 =
+    [<AllowNullLiteral>]
+    type ILocationInfo =
+        abstract name: string
+        abstract isPrivate: bool
+
+    [<AllowNullLiteral>]
+    type ILocationsMgr =
+        abstract list: unit -> JS.Promise<ILocationInfo[]>
+        abstract getDefault: unit -> JS.Promise<ILocationInfo>
+        abstract setDefault: args: obj -> JS.Promise<ILocationInfo>
+
+    [<AllowNullLiteral>]
+    type IMetricSet =
+        abstract values: obj[]
+
+    [<AllowNullLiteral>]
+    type IMetricsMgr =
+        abstract account: args: obj -> JS.Promise<IMetricSet>
+        abstract basin: args: obj -> JS.Promise<IMetricSet>
+        abstract stream: args: obj -> JS.Promise<IMetricSet>
+
+    [<AllowNullLiteral>]
+    type ITokenInfo =
+        abstract id: string
+        abstract autoPrefixStreams: obj
+
+    [<AllowNullLiteral>]
+    type IListTokens =
+        abstract accessTokens: ITokenInfo[]
+        abstract hasMore: bool
+
+    [<AllowNullLiteral>]
+    type IIssueToken =
+        abstract accessToken: string
+
+    [<AllowNullLiteral>]
+    type ITokensMgr =
+        abstract list: args: obj -> JS.Promise<IListTokens>
+        abstract issue: args: obj -> JS.Promise<IIssueToken>
+        abstract revoke: args: obj -> JS.Promise<obj>
+
+    [<AllowNullLiteral>]
+    type IS2 =
         abstract basins: IBasinsMgr
         abstract basin: name: string -> IBasin
+        abstract locations: ILocationsMgr
+        abstract metrics: IMetricsMgr
+        abstract accessTokens: ITokensMgr
 
     // Imported JS values.
     let s2Ctor: obj = import "S2" "@s2-dev/streamstore"

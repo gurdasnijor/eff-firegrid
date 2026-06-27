@@ -26,6 +26,7 @@ module S2Cli =
         toml.Split('\n')
         |> Array.tryPick (fun raw ->
             let line = raw.Trim()
+
             if line.StartsWith "access_token" then
                 match line.Split '"' with
                 | [| _; token; _ |] -> Some token
@@ -36,10 +37,10 @@ module S2Cli =
     /// Read the access token from the s2 CLI config.
     let accessToken () : string =
         let path = configPath ()
+
         match parseToken (readFileSync path "utf8") with
         | Some token -> token
         | None -> failwithf "no access_token found in %s" path
 
     /// Connect to S2 using the access token stored by the s2 CLI.
-    let connect () : S2.Client =
-        S2.connect (accessToken ())
+    let connect () : S2.Client = S2.connect (accessToken ())

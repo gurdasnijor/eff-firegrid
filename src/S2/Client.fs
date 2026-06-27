@@ -21,7 +21,10 @@ module S2 =
     type StreamPosition = { SeqNum: int64; Timestamp: DateTime }
 
     /// Acknowledged range plus stream tail after an append.
-    type AppendAck = { Start: StreamPosition; End: StreamPosition; Tail: StreamPosition }
+    type AppendAck =
+        { Start: StreamPosition
+          End: StreamPosition
+          Tail: StreamPosition }
 
     /// A record read back from a stream.
     type ReadRecord =
@@ -30,8 +33,15 @@ module S2 =
           Headers: (string * string) list
           Timestamp: DateTime }
 
-    type StreamInfo = { Name: string; CreatedAt: DateTime; DeletedAt: DateTime option }
-    type BasinInfo = { Name: string; CreatedAt: DateTime; DeletedAt: DateTime option }
+    type StreamInfo =
+        { Name: string
+          CreatedAt: DateTime
+          DeletedAt: DateTime option }
+
+    type BasinInfo =
+        { Name: string
+          CreatedAt: DateTime
+          DeletedAt: DateTime option }
 
     /// Where to start a read.
     type ReadFrom =
@@ -59,7 +69,9 @@ module S2 =
         | RetainForSecs of int
         | RetainForever
 
-    type Timestamping = { Mode: TimestampingMode option; Uncapped: bool option }
+    type Timestamping =
+        { Mode: TimestampingMode option
+          Uncapped: bool option }
 
     /// Stream configuration. Build from `StreamConfig.empty` and set fields.
     type StreamConfig =
@@ -81,6 +93,70 @@ module S2 =
         | Updated
         | Noop
 
+    // ---- Connect options (Phase 5) ----
+
+    type Compression =
+        | NoCompression
+        | Gzip
+        | Zstd
+
+    type Retry =
+        { MaxAttempts: int option
+          MinBaseDelayMillis: int option
+          MaxBaseDelayMillis: int option }
+
+    /// Options for `connectWith`. Build from `ConnectOptions.create token`.
+    type ConnectOptions =
+        { AccessToken: string
+          AccountEndpoint: string option
+          BasinEndpoint: string option
+          RequestTimeoutMillis: int option
+          ConnectionTimeoutMillis: int option
+          Retry: Retry option
+          Compression: Compression option }
+
+    // ---- Managers (Phase 3) ----
+
+    type LocationInfo = { Name: string; IsPrivate: bool }
+
+    /// A metric in a metric set response.
+    type Metric =
+        | Scalar of name: string * value: float
+        | Series of name: string * points: (DateTime * float) list
+        | Labels of name: string * values: string list
+
+    type MetricSet = Metric list
+
+    type AccountMetricSet =
+        | ActiveBasins
+        | AccountOps
+
+    type BasinMetricSet =
+        | BasinStorage
+        | AppendOps
+        | ReadOps
+        | ReadThroughput
+        | AppendThroughput
+        | BasinOps
+
+    type TimeseriesInterval =
+        | Minute
+        | Hour
+        | Day
+
+    type TokenInfo = { Id: string; AutoPrefixStreams: bool }
+
+    /// A resource-set matcher for an access-token scope.
+    type ResourceMatch =
+        | Exact of string
+        | Prefix of string
+
+    /// An access-token scope (subset; basins/streams resource sets + op names).
+    type TokenScope =
+        { Basins: ResourceMatch option
+          Streams: ResourceMatch option
+          Ops: string list }
+
     /// A record to append. Use the `Record` module to construct.
     /// NOTE: a single append batch must be one format — `text`/`fence` are
     /// string-format; `bytes`/`trim` are bytes-format. Don't mix the two.
@@ -93,26 +169,30 @@ module S2 =
 
     /// Conditions applied to an append (conditional / single-writer primitives).
     type AppendOptions =
-        { /// Require the stream tail to equal this seq num, else `SeqNumMismatch`.
-          MatchSeqNum: int64 option
-          /// Require the stream's fencing token to equal this, else `FencingTokenMismatch`.
-          FencingToken: string option }
+        {
+            /// Require the stream tail to equal this seq num, else `SeqNumMismatch`.
+            MatchSeqNum: int64 option
+            /// Require the stream's fencing token to equal this, else `FencingTokenMismatch`.
+            FencingToken: string option
+        }
 
     /// Full read configuration. Use `ReadOptions.empty` and override fields.
     type ReadOptions =
-        { Start: ReadFrom option
-          /// Start from the tail if the requested position is beyond it.
-          Clamp: bool
-          /// Stop after this many records.
-          Count: int option
-          /// Stop after this many metered bytes.
-          Bytes: int option
-          /// Stop at this timestamp (exclusive).
-          UntilTimestamp: DateTime option
-          /// Wait up to this many seconds for new records before stopping.
-          WaitSecs: int option
-          /// Filter command records (fence/trim) out of the result.
-          IgnoreCommandRecords: bool }
+        {
+            Start: ReadFrom option
+            /// Start from the tail if the requested position is beyond it.
+            Clamp: bool
+            /// Stop after this many records.
+            Count: int option
+            /// Stop after this many metered bytes.
+            Bytes: int option
+            /// Stop at this timestamp (exclusive).
+            UntilTimestamp: DateTime option
+            /// Wait up to this many seconds for new records before stopping.
+            WaitSecs: int option
+            /// Filter command records (fence/trim) out of the result.
+            IgnoreCommandRecords: bool
+        }
 
     // ---- Opaque client handles (single-field wrappers over JS objects) ----
 
@@ -140,7 +220,10 @@ module S2 =
     [<RequireQualifiedAccess>]
     module AppendOptions =
         /// No conditions.
-        let none = { MatchSeqNum = None; FencingToken = None }
+        let none =
+            { MatchSeqNum = None
+              FencingToken = None }
+
         /// Require the stream tail to equal `seqNum`.
         let matchSeqNum (seqNum: int64) (o: AppendOptions) = { o with MatchSeqNum = Some seqNum }
         /// Require the stream fencing token to equal `token`.
@@ -173,16 +256,44 @@ module S2 =
               DefaultStreamConfig = None
               StreamCipher = None }
 
+    [<RequireQualifiedAccess>]
+    module Retry =
+        let empty =
+            { MaxAttempts = None
+              MinBaseDelayMillis = None
+              MaxBaseDelayMillis = None }
+
+    [<RequireQualifiedAccess>]
+    module ConnectOptions =
+        /// Default options for an access token (AWS environment).
+        let create (token: string) =
+            { AccessToken = token
+              AccountEndpoint = None
+              BasinEndpoint = None
+              RequestTimeoutMillis = None
+              ConnectionTimeoutMillis = None
+              Retry = None
+              Compression = None }
+
+    [<RequireQualifiedAccess>]
+    module TokenScope =
+        let empty =
+            { Basins = None
+              Streams = None
+              Ops = [] }
+
     // ---- Internal mapping helpers ----
 
-    let private optDate (d: DateTime) : DateTime option =
-        if isNil (box d) then None else Some d
+    let private optDate (d: DateTime) : DateTime option = if isNil (box d) then None else Some d
 
     let private toPos (p: IStreamPosition) : StreamPosition =
-        { SeqNum = int64 p.seqNum; Timestamp = p.timestamp }
+        { SeqNum = int64 p.seqNum
+          Timestamp = p.timestamp }
 
     let private toAck (a: IAppendAck) : AppendAck =
-        { Start = toPos a.start; End = toPos a.``end``; Tail = toPos a.tail }
+        { Start = toPos a.start
+          End = toPos a.``end``
+          Tail = toPos a.tail }
 
     let private toRecord (r: IReadRecord) : ReadRecord =
         { SeqNum = int64 r.seqNum
@@ -192,18 +303,32 @@ module S2 =
 
     let private mkRecord (r: Record) : obj =
         match r with
-        | RText(body, headers) -> recString appendRecordNs (box {| body = body; headers = List.toArray headers |})
-        | RBytes(body, headers) -> recBytes appendRecordNs (box {| body = body; headers = List.toArray headers |})
+        | RText(body, headers) ->
+            recString
+                appendRecordNs
+                (box
+                    {| body = body
+                       headers = List.toArray headers |})
+        | RBytes(body, headers) ->
+            recBytes
+                appendRecordNs
+                (box
+                    {| body = body
+                       headers = List.toArray headers |})
         | RFence token -> recFence appendRecordNs token
         | RTrim seqNum -> recTrim appendRecordNs (float seqNum)
 
-    let private mkInput (records: Record list) (opts: AppendOptions) : obj =
+    // `internal` (not `private`) so benchmarks/tests can exercise the hot build path.
+    let internal mkInput (records: Record list) (opts: AppendOptions) : obj =
         let recs = records |> List.map mkRecord |> List.toArray
+
         let optsObj =
-            createObj [
-                if opts.MatchSeqNum.IsSome then "matchSeqNum" ==> float opts.MatchSeqNum.Value
-                if opts.FencingToken.IsSome then "fencingToken" ==> opts.FencingToken.Value
-            ]
+            createObj
+                [ if opts.MatchSeqNum.IsSome then
+                      "matchSeqNum" ==> float opts.MatchSeqNum.Value
+                  if opts.FencingToken.IsSome then
+                      "fencingToken" ==> opts.FencingToken.Value ]
+
         inputCreate appendInputNs (box recs) optsObj
 
     let private fromObj (from: ReadFrom) : obj =
@@ -212,29 +337,34 @@ module S2 =
         | FromTimestamp t -> box {| timestamp = t |}
         | FromTailOffset n -> box {| tailOffset = float n |}
 
-    let private readInput (o: ReadOptions) : obj =
+    let internal readInput (o: ReadOptions) : obj =
         let startObj =
-            createObj [
-                match o.Start with
-                | Some f -> "from" ==> fromObj f
-                | None -> ()
-                if o.Clamp then "clamp" ==> true
-            ]
+            createObj
+                [ match o.Start with
+                  | Some f -> "from" ==> fromObj f
+                  | None -> ()
+                  if o.Clamp then
+                      "clamp" ==> true ]
+
         let stopObj =
-            createObj [
-                if o.Count.IsSome || o.Bytes.IsSome then
-                    "limits" ==> createObj [
-                        if o.Count.IsSome then "count" ==> o.Count.Value
-                        if o.Bytes.IsSome then "bytes" ==> o.Bytes.Value
-                    ]
-                if o.UntilTimestamp.IsSome then "untilTimestamp" ==> o.UntilTimestamp.Value
-                if o.WaitSecs.IsSome then "waitSecs" ==> o.WaitSecs.Value
-            ]
-        createObj [
-            "start" ==> startObj
-            "stop" ==> stopObj
-            if o.IgnoreCommandRecords then "ignoreCommandRecords" ==> true
-        ]
+            createObj
+                [ if o.Count.IsSome || o.Bytes.IsSome then
+                      "limits"
+                      ==> createObj
+                              [ if o.Count.IsSome then
+                                    "count" ==> o.Count.Value
+                                if o.Bytes.IsSome then
+                                    "bytes" ==> o.Bytes.Value ]
+                  if o.UntilTimestamp.IsSome then
+                      "untilTimestamp" ==> o.UntilTimestamp.Value
+                  if o.WaitSecs.IsSome then
+                      "waitSecs" ==> o.WaitSecs.Value ]
+
+        createObj
+            [ "start" ==> startObj
+              "stop" ==> stopObj
+              if o.IgnoreCommandRecords then
+                  "ignoreCommandRecords" ==> true ]
 
     // ---- Config <-> JS mapping (SDK camelCase format; enum values are wire strings) ----
 
@@ -274,46 +404,43 @@ module S2 =
         | _ -> None
 
     let private streamConfigObj (c: StreamConfig) : obj =
-        createObj [
-            match c.DeleteOnEmptyMinAgeSecs with
-            | Some n -> "deleteOnEmpty" ==> createObj [ "minAgeSecs" ==> n ]
-            | None -> ()
-            match c.RetentionPolicy with
-            | Some(RetainForSecs s) -> "retentionPolicy" ==> createObj [ "ageSecs" ==> s ]
-            | Some RetainForever -> "retentionPolicy" ==> createObj [ "infinite" ==> createObj [] ]
-            | None -> ()
-            match c.StorageClass with
-            | Some sc -> "storageClass" ==> storageClassStr sc
-            | None -> ()
-            match c.Timestamping with
-            | Some ts ->
-                "timestamping"
-                ==> createObj [
-                    match ts.Mode with
-                    | Some m -> "mode" ==> tsModeStr m
-                    | None -> ()
-                    match ts.Uncapped with
-                    | Some u -> "uncapped" ==> u
-                    | None -> ()
-                ]
-            | None -> ()
-        ]
+        createObj
+            [ match c.DeleteOnEmptyMinAgeSecs with
+              | Some n -> "deleteOnEmpty" ==> createObj [ "minAgeSecs" ==> n ]
+              | None -> ()
+              match c.RetentionPolicy with
+              | Some(RetainForSecs s) -> "retentionPolicy" ==> createObj [ "ageSecs" ==> s ]
+              | Some RetainForever -> "retentionPolicy" ==> createObj [ "infinite" ==> createObj [] ]
+              | None -> ()
+              match c.StorageClass with
+              | Some sc -> "storageClass" ==> storageClassStr sc
+              | None -> ()
+              match c.Timestamping with
+              | Some ts ->
+                  "timestamping"
+                  ==> createObj
+                          [ match ts.Mode with
+                            | Some m -> "mode" ==> tsModeStr m
+                            | None -> ()
+                            match ts.Uncapped with
+                            | Some u -> "uncapped" ==> u
+                            | None -> () ]
+              | None -> () ]
 
     let private basinConfigObj (c: BasinConfig) : obj =
-        createObj [
-            match c.CreateStreamOnAppend with
-            | Some b -> "createStreamOnAppend" ==> b
-            | None -> ()
-            match c.CreateStreamOnRead with
-            | Some b -> "createStreamOnRead" ==> b
-            | None -> ()
-            match c.DefaultStreamConfig with
-            | Some sc -> "defaultStreamConfig" ==> streamConfigObj sc
-            | None -> ()
-            match c.StreamCipher with
-            | Some e -> "streamCipher" ==> encAlgoStr e
-            | None -> ()
-        ]
+        createObj
+            [ match c.CreateStreamOnAppend with
+              | Some b -> "createStreamOnAppend" ==> b
+              | None -> ()
+              match c.CreateStreamOnRead with
+              | Some b -> "createStreamOnRead" ==> b
+              | None -> ()
+              match c.DefaultStreamConfig with
+              | Some sc -> "defaultStreamConfig" ==> streamConfigObj sc
+              | None -> ()
+              match c.StreamCipher with
+              | Some e -> "streamCipher" ==> encAlgoStr e
+              | None -> () ]
 
     let private parseStreamConfig (c: IStreamConfig) : StreamConfig =
         { DeleteOnEmptyMinAgeSecs =
@@ -322,25 +449,56 @@ module S2 =
             else
                 Some(int (unbox<float> c.deleteOnEmpty.minAgeSecs))
           RetentionPolicy =
-            if isNil (box c.retentionPolicy) then None
-            elif not (isNil c.retentionPolicy.ageSecs) then Some(RetainForSecs(int (unbox<float> c.retentionPolicy.ageSecs)))
-            elif not (isNil c.retentionPolicy.infinite) then Some RetainForever
-            else None
-          StorageClass = (if isNil c.storageClass then None else storageClassOf (unbox<string> c.storageClass))
+            if isNil (box c.retentionPolicy) then
+                None
+            elif not (isNil c.retentionPolicy.ageSecs) then
+                Some(RetainForSecs(int (unbox<float> c.retentionPolicy.ageSecs)))
+            elif not (isNil c.retentionPolicy.infinite) then
+                Some RetainForever
+            else
+                None
+          StorageClass =
+            (if isNil c.storageClass then
+                 None
+             else
+                 storageClassOf (unbox<string> c.storageClass))
           Timestamping =
             if isNil (box c.timestamping) then
                 None
             else
                 Some
-                    { Mode = (if isNil c.timestamping.mode then None else tsModeOf (unbox<string> c.timestamping.mode))
-                      Uncapped = (if isNil c.timestamping.uncapped then None else Some(unbox<bool> c.timestamping.uncapped)) } }
+                    { Mode =
+                        (if isNil c.timestamping.mode then
+                             None
+                         else
+                             tsModeOf (unbox<string> c.timestamping.mode))
+                      Uncapped =
+                        (if isNil c.timestamping.uncapped then
+                             None
+                         else
+                             Some(unbox<bool> c.timestamping.uncapped)) } }
 
     let private parseBasinConfig (c: IBasinConfig) : BasinConfig =
-        { CreateStreamOnAppend = (if isNil c.createStreamOnAppend then None else Some(unbox<bool> c.createStreamOnAppend))
-          CreateStreamOnRead = (if isNil c.createStreamOnRead then None else Some(unbox<bool> c.createStreamOnRead))
+        { CreateStreamOnAppend =
+            (if isNil c.createStreamOnAppend then
+                 None
+             else
+                 Some(unbox<bool> c.createStreamOnAppend))
+          CreateStreamOnRead =
+            (if isNil c.createStreamOnRead then
+                 None
+             else
+                 Some(unbox<bool> c.createStreamOnRead))
           DefaultStreamConfig =
-            (if isNil (box c.defaultStreamConfig) then None else Some(parseStreamConfig c.defaultStreamConfig))
-          StreamCipher = (if isNil c.streamCipher then None else encAlgoOf (unbox<string> c.streamCipher)) }
+            (if isNil (box c.defaultStreamConfig) then
+                 None
+             else
+                 Some(parseStreamConfig c.defaultStreamConfig))
+          StreamCipher =
+            (if isNil c.streamCipher then
+                 None
+             else
+                 encAlgoOf (unbox<string> c.streamCipher)) }
 
     let private provisionOf =
         function
@@ -348,11 +506,104 @@ module S2 =
         | "updated" -> Updated
         | _ -> Noop
 
+    let private compressionStr =
+        function
+        | NoCompression -> "none"
+        | Gzip -> "gzip"
+        | Zstd -> "zstd"
+
+    let private accountMetricSetStr =
+        function
+        | ActiveBasins -> "active-basins"
+        | AccountOps -> "account-ops"
+
+    let private basinMetricSetStr =
+        function
+        | BasinStorage -> "storage"
+        | AppendOps -> "append-ops"
+        | ReadOps -> "read-ops"
+        | ReadThroughput -> "read-throughput"
+        | AppendThroughput -> "append-throughput"
+        | BasinOps -> "basin-ops"
+
+    let private parseMetric (m: obj) : Metric =
+        let series (node: obj) =
+            [ for p in unbox<obj[]> (node?values) ->
+                  let arr = unbox<obj[]> p
+                  (unbox<DateTime> arr.[0], unbox<float> arr.[1]) ]
+
+        if not (isNil (m?scalar)) then
+            Scalar(unbox<string> (m?scalar?name), unbox<float> (m?scalar?value))
+        elif not (isNil (m?label)) then
+            Labels(unbox<string> (m?label?name), List.ofArray (unbox<string[]> (m?label?values)))
+        elif not (isNil (m?accumulation)) then
+            Series(unbox<string> (m?accumulation?name), series (m?accumulation))
+        elif not (isNil (m?gauge)) then
+            Series(unbox<string> (m?gauge?name), series (m?gauge))
+        else
+            Labels("unknown", [])
+
+    let private resourceObj =
+        function
+        | Exact s -> createObj [ "exact" ==> s ]
+        | Prefix p -> createObj [ "prefix" ==> p ]
+
+    let private scopeObj (sc: TokenScope) : obj =
+        createObj
+            [ match sc.Basins with
+              | Some r -> "basins" ==> resourceObj r
+              | None -> ()
+              match sc.Streams with
+              | Some r -> "streams" ==> resourceObj r
+              | None -> ()
+              if not (List.isEmpty sc.Ops) then
+                  "ops" ==> List.toArray sc.Ops ]
+
     // ---- Connect ----
 
     /// Create a client against the default AWS environment (`aws.s2.dev`).
     let connect (accessToken: string) : Client =
         { Raw = newS2 s2Ctor (box {| accessToken = accessToken |}) }
+
+    /// Create a client with explicit options (endpoints, retry, compression, timeouts).
+    let connectWith (o: ConnectOptions) : Client =
+        let opts =
+            createObj
+                [ "accessToken" ==> o.AccessToken
+                  if o.AccountEndpoint.IsSome || o.BasinEndpoint.IsSome then
+                      "endpoints"
+                      ==> createObj
+                              [ match o.AccountEndpoint with
+                                | Some a -> "account" ==> a
+                                | None -> ()
+                                match o.BasinEndpoint with
+                                | Some b -> "basin" ==> b
+                                | None -> () ]
+                  match o.RequestTimeoutMillis with
+                  | Some t -> "requestTimeoutMillis" ==> t
+                  | None -> ()
+                  match o.ConnectionTimeoutMillis with
+                  | Some t -> "connectionTimeoutMillis" ==> t
+                  | None -> ()
+                  match o.Retry with
+                  | Some r ->
+                      "retry"
+                      ==> createObj
+                              [ match r.MaxAttempts with
+                                | Some n -> "maxAttempts" ==> n
+                                | None -> ()
+                                match r.MinBaseDelayMillis with
+                                | Some n -> "minBaseDelayMillis" ==> n
+                                | None -> ()
+                                match r.MaxBaseDelayMillis with
+                                | Some n -> "maxBaseDelayMillis" ==> n
+                                | None -> () ]
+                  | None -> ()
+                  match o.Compression with
+                  | Some c -> "compression" ==> compressionStr c
+                  | None -> () ]
+
+        { Raw = newS2 s2Ctor opts }
 
     // ---- Account / basin management ----
 
@@ -360,14 +611,23 @@ module S2 =
     let listBasins (client: Client) : Async<BasinInfo list> =
         async {
             let! r = Async.AwaitPromise(client.Raw.basins.list (createObj []))
-            return [ for b in r.basins -> { Name = b.name; CreatedAt = b.createdAt; DeletedAt = optDate b.deletedAt } ]
+
+            return
+                [ for b in r.basins ->
+                      { Name = b.name
+                        CreatedAt = b.createdAt
+                        DeletedAt = optDate b.deletedAt } ]
         }
 
     /// Create a basin (globally unique name, 8–48 chars).
     let createBasin (name: string) (client: Client) : Async<BasinInfo> =
         async {
             let! b = Async.AwaitPromise(client.Raw.basins.create (box {| basin = name |}))
-            return { Name = b.name; CreatedAt = b.createdAt; DeletedAt = optDate b.deletedAt }
+
+            return
+                { Name = b.name
+                  CreatedAt = b.createdAt
+                  DeletedAt = optDate b.deletedAt }
         }
 
     /// Delete a basin.
@@ -378,8 +638,7 @@ module S2 =
         }
 
     /// Get a basin-scoped client.
-    let basin (name: string) (client: Client) : Basin =
-        { Raw = client.Raw.basin (name) }
+    let basin (name: string) (client: Client) : Basin = { Raw = client.Raw.basin (name) }
 
     let basinName (b: Basin) : string = b.Raw.name
 
@@ -387,14 +646,30 @@ module S2 =
     let listBasinsWith (prefix: string) (client: Client) : Async<BasinInfo list> =
         async {
             let! r = Async.AwaitPromise(client.Raw.basins.list (box {| prefix = prefix |}))
-            return [ for b in r.basins -> { Name = b.name; CreatedAt = b.createdAt; DeletedAt = optDate b.deletedAt } ]
+
+            return
+                [ for b in r.basins ->
+                      { Name = b.name
+                        CreatedAt = b.createdAt
+                        DeletedAt = optDate b.deletedAt } ]
         }
 
     /// Create a basin with an explicit configuration.
     let createBasinWith (config: BasinConfig) (name: string) (client: Client) : Async<BasinInfo> =
         async {
-            let! b = Async.AwaitPromise(client.Raw.basins.create (box {| basin = name; config = basinConfigObj config |}))
-            return { Name = b.name; CreatedAt = b.createdAt; DeletedAt = optDate b.deletedAt }
+            let! b =
+                Async.AwaitPromise(
+                    client.Raw.basins.create (
+                        box
+                            {| basin = name
+                               config = basinConfigObj config |}
+                    )
+                )
+
+            return
+                { Name = b.name
+                  CreatedAt = b.createdAt
+                  DeletedAt = optDate b.deletedAt }
         }
 
     /// Get a basin's configuration.
@@ -419,7 +694,12 @@ module S2 =
     let listStreams (b: Basin) : Async<StreamInfo list> =
         async {
             let! r = Async.AwaitPromise(b.Raw.streams.list (createObj []))
-            return [ for s in r.streams -> { Name = s.name; CreatedAt = s.createdAt; DeletedAt = optDate s.deletedAt } ]
+
+            return
+                [ for s in r.streams ->
+                      { Name = s.name
+                        CreatedAt = s.createdAt
+                        DeletedAt = optDate s.deletedAt } ]
         }
 
     /// Create a stream with the basin's default configuration.
@@ -445,8 +725,7 @@ module S2 =
         }
 
     /// Get a stream-scoped client.
-    let stream (name: string) (b: Basin) : Stream =
-        { Raw = b.Raw.stream (name) }
+    let stream (name: string) (b: Basin) : Stream = { Raw = b.Raw.stream (name) }
 
     let streamName (s: Stream) : string = s.Raw.name
 
@@ -454,20 +733,41 @@ module S2 =
     let listStreamsWith (prefix: string) (b: Basin) : Async<StreamInfo list> =
         async {
             let! r = Async.AwaitPromise(b.Raw.streams.list (box {| prefix = prefix |}))
-            return [ for s in r.streams -> { Name = s.name; CreatedAt = s.createdAt; DeletedAt = optDate s.deletedAt } ]
+
+            return
+                [ for s in r.streams ->
+                      { Name = s.name
+                        CreatedAt = s.createdAt
+                        DeletedAt = optDate s.deletedAt } ]
         }
 
     /// Create a stream with an explicit configuration.
     let createStreamWith (config: StreamConfig) (name: string) (b: Basin) : Async<unit> =
         async {
-            let! _ = Async.AwaitPromise(b.Raw.streams.create (box {| stream = name; config = streamConfigObj config |}))
+            let! _ =
+                Async.AwaitPromise(
+                    b.Raw.streams.create (
+                        box
+                            {| stream = name
+                               config = streamConfigObj config |}
+                    )
+                )
+
             return ()
         }
 
     /// Idempotently ensure a stream with a configuration; returns the provisioning result.
     let ensureStreamWith (config: StreamConfig) (name: string) (b: Basin) : Async<ProvisionResult> =
         async {
-            let! r = Async.AwaitPromise(b.Raw.streams.ensure (box {| stream = name; config = streamConfigObj config |}))
+            let! r =
+                Async.AwaitPromise(
+                    b.Raw.streams.ensure (
+                        box
+                            {| stream = name
+                               config = streamConfigObj config |}
+                    )
+                )
+
             return provisionOf r.result
         }
 
@@ -537,7 +837,11 @@ module S2 =
 
     /// Read up to `count` records starting at `from`.
     let read (from: ReadFrom) (count: int) (s: Stream) : Async<ReadRecord list> =
-        s |> readWith { ReadOptions.empty with Start = Some from; Count = Some count }
+        s
+        |> readWith
+            { ReadOptions.empty with
+                Start = Some from
+                Count = Some count }
 
     /// Get the current tail (next sequence number / timestamp) of a stream.
     let checkTail (s: Stream) : Async<StreamPosition> =
@@ -619,8 +923,10 @@ module S2 =
         async {
             let it = asyncIterator (box sess.Raw)
             let mutable go = true
+
             while go do
                 let! res = Async.AwaitPromise(iterNext it)
+
                 if iterDone res then
                     go <- false
                 else
@@ -639,10 +945,159 @@ module S2 =
             let it = asyncIterator (box sess.Raw)
             let acc = ResizeArray<ReadRecord>()
             let mutable go = true
+
             while go && acc.Count < n do
                 let! res = Async.AwaitPromise(iterNext it)
-                if iterDone res then go <- false
-                else acc.Add(toRecord (unbox<IReadRecord> (iterValue res)))
+
+                if iterDone res then
+                    go <- false
+                else
+                    acc.Add(toRecord (unbox<IReadRecord> (iterValue res)))
+
             let! _ = Async.AwaitPromise(iterReturn it)
             return List.ofSeq acc
+        }
+
+    // ---- Internal bridges for the patterns layer (src/S2/Patterns.fs) ----
+
+    /// Open the raw underlying append session (for higher-level wrappers).
+    let internal openRawAppendSession (s: Stream) : Async<IAppendSession> =
+        Async.AwaitPromise(s.Raw.appendSession (createObj []))
+
+    /// Open a raw bytes-format read session (for higher-level wrappers).
+    let internal openRawBytesReadSession (opts: ReadOptions) (s: Stream) : Async<IReadSession> =
+        Async.AwaitPromise(s.Raw.readSession (readInput opts, createObj [ "as" ==> "bytes" ]))
+
+    // ---- Locations ----
+
+    /// List available locations.
+    let listLocations (client: Client) : Async<LocationInfo list> =
+        async {
+            let! r = Async.AwaitPromise(client.Raw.locations.list ())
+
+            return
+                [ for l in r ->
+                      { Name = l.name
+                        IsPrivate = l.isPrivate } ]
+        }
+
+    /// Get the default location used when creating basins without an explicit one.
+    let getDefaultLocation (client: Client) : Async<LocationInfo> =
+        async {
+            let! l = Async.AwaitPromise(client.Raw.locations.getDefault ())
+
+            return
+                { Name = l.name
+                  IsPrivate = l.isPrivate }
+        }
+
+    /// Set the default location.
+    let setDefaultLocation (location: string) (client: Client) : Async<LocationInfo> =
+        async {
+            let! l = Async.AwaitPromise(client.Raw.locations.setDefault (box {| location = location |}))
+
+            return
+                { Name = l.name
+                  IsPrivate = l.isPrivate }
+        }
+
+    // ---- Metrics ----
+
+    /// Account-level metrics over a `[start, end)` window.
+    let accountMetrics
+        (set: AccountMetricSet)
+        (startTime: DateTime)
+        (endTime: DateTime)
+        (client: Client)
+        : Async<MetricSet> =
+        async {
+            let! r =
+                Async.AwaitPromise(
+                    client.Raw.metrics.account (
+                        box
+                            {| set = accountMetricSetStr set
+                               start = startTime
+                               ``end`` = endTime |}
+                    )
+                )
+
+            return [ for m in r.values -> parseMetric m ]
+        }
+
+    /// Basin-level metrics over a `[start, end)` window.
+    let basinMetrics
+        (set: BasinMetricSet)
+        (name: string)
+        (startTime: DateTime)
+        (endTime: DateTime)
+        (client: Client)
+        : Async<MetricSet> =
+        async {
+            let! r =
+                Async.AwaitPromise(
+                    client.Raw.metrics.basin (
+                        box
+                            {| basin = name
+                               set = basinMetricSetStr set
+                               start = startTime
+                               ``end`` = endTime |}
+                    )
+                )
+
+            return [ for m in r.values -> parseMetric m ]
+        }
+
+    /// Stream-level storage metrics over a `[start, end)` window.
+    let streamMetrics
+        (basinName: string)
+        (streamName: string)
+        (startTime: DateTime)
+        (endTime: DateTime)
+        (client: Client)
+        : Async<MetricSet> =
+        async {
+            let! r =
+                Async.AwaitPromise(
+                    client.Raw.metrics.stream (
+                        box
+                            {| basin = basinName
+                               stream = streamName
+                               set = "storage"
+                               start = startTime
+                               ``end`` = endTime |}
+                    )
+                )
+
+            return [ for m in r.values -> parseMetric m ]
+        }
+
+    // ---- Access tokens ----
+
+    /// List access tokens on the account.
+    let listTokens (client: Client) : Async<TokenInfo list> =
+        async {
+            let! r = Async.AwaitPromise(client.Raw.accessTokens.list (createObj []))
+
+            return
+                [ for t in r.accessTokens ->
+                      { Id = t.id
+                        AutoPrefixStreams =
+                          (if isNil t.autoPrefixStreams then
+                               false
+                           else
+                               unbox<bool> t.autoPrefixStreams) } ]
+        }
+
+    /// Issue a new access token; returns the secret token string.
+    let issueToken (id: string) (scope: TokenScope) (client: Client) : Async<string> =
+        async {
+            let! r = Async.AwaitPromise(client.Raw.accessTokens.issue (box {| id = id; scope = scopeObj scope |}))
+            return r.accessToken
+        }
+
+    /// Revoke an access token by id.
+    let revokeToken (id: string) (client: Client) : Async<unit> =
+        async {
+            let! _ = Async.AwaitPromise(client.Raw.accessTokens.revoke (box {| id = id |}))
+            return ()
         }

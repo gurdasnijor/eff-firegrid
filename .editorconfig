@@ -1,0 +1,33 @@
+root = true
+
+# Baseline for all files
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+
+# F# sources — these settings double as the Fantomas configuration.
+# The whole tree is Fantomas-formatted; `npm run check` enforces it.
+[*.{fs,fsi,fsx}]
+indent_size = 4
+max_line_length = 120
+
+fsharp_max_line_length = 120
+fsharp_space_before_uppercase_invocation = false
+fsharp_space_before_class_constructor = false
+fsharp_space_before_member = false
+fsharp_space_before_colon = false
+fsharp_space_after_comma = true
+fsharp_space_before_semicolon = false
+fsharp_space_after_semicolon = true
+fsharp_space_around_delimiter = true
+fsharp_multiline_bracket_style = cramped
+fsharp_newline_between_type_definition_and_members = true
+fsharp_blank_lines_around_nested_multiline_expressions = true
+fsharp_bar_before_discriminated_union_declaration = false
+
+# Config / data files use 2-space indentation.
+[*.{json,yml,yaml}]
+indent_size = 2

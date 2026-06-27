@@ -30,13 +30,20 @@ module S2Errors =
 
     // Best-effort seq num from an error's `tail` (the field may be camelCase or wire snake_case).
     let private tailSeqNum (tail: obj) : int64 option =
-        if isNil tail then None
+        if isNil tail then
+            None
         else
             let sn = tail?seqNum
-            if isFiniteNum sn then Some(int64 (unbox<float> sn))
+
+            if isFiniteNum sn then
+                Some(int64 (unbox<float> sn))
             else
                 let sn2 = tail?seq_num
-                if isFiniteNum sn2 then Some(int64 (unbox<float> sn2)) else None
+
+                if isFiniteNum sn2 then
+                    Some(int64 (unbox<float> sn2))
+                else
+                    None
 
     /// A classified S2 failure.
     type S2Failure =
@@ -53,6 +60,7 @@ module S2Errors =
     /// Classify a caught exception into an `S2Failure`.
     let classify (e: exn) : S2Failure =
         let o = box e
+
         if isInstance seqNumMismatchError o then
             SeqNumMismatch(int64 (unbox<float> (o?expectedSeqNum)))
         elif isInstance fencingTokenMismatchError o then

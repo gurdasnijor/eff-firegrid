@@ -1,0 +1,84 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  DOTNET_NOLOGO: 'true'
+  DOTNET_CLI_TELEMETRY_OPTOUT: 'true'
+
+jobs:
+  quality:
+    name: Static quality gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.fsproj', 'dotnet-tools.json', 'global.json') }}
+          restore-keys: nuget-${{ runner.os }}-
+
+      - run: dotnet tool restore
+      - run: npm ci --no-fund --no-audit
+
+      - name: Format check (Fantomas)
+        run: dotnet fantomas --check src tests repl.fsx
+
+      - name: Lint (FSharpLint)
+        run: dotnet fsharplint lint --lint-config fsharplint.json eff-firegrid.fsproj
+
+      - name: Build / type-check
+        run: dotnet build -clp:ErrorsOnly
+
+      - name: Fable transpile smoke (no run)
+        run: dotnet fable repl.fsx --outDir build --noCache
+
+  # The integration suite hits the live S2 API. It runs only when an S2 token
+  # secret is configured (e.g. on main / trusted PRs).
+  integration:
+    name: Integration suite (live S2)
+    runs-on: ubuntu-latest
+    needs: quality
+    if: ${{ github.ref == 'refs/heads/main' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: dotnet tool restore
+      - run: npm ci --no-fund --no-audit
+      - name: Run suite
+        env:
+          S2_ACCESS_TOKEN: ${{ secrets.S2_ACCESS_TOKEN }}
+        run: |
+          if [ -z "$S2_ACCESS_TOKEN" ]; then
+            echo "::notice::S2_ACCESS_TOKEN secret not configured — skipping the live integration suite."
+            exit 0
+          fi
+          mkdir -p ~/.config/s2
+          printf 'access_token = "%s"\n' "$S2_ACCESS_TOKEN" > ~/.config/s2/config.toml
+          npm test

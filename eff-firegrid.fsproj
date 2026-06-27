@@ -12,6 +12,7 @@
     <Compile Include="src/S2/Client.fs" />
     <Compile Include="src/S2/Cli.fs" />
     <Compile Include="src/S2/Patterns.fs" />
+    <Compile Include="src/Foundation/StreamLog.fs" />
     <Compile Include="src/Program.fs" />
   </ItemGroup>
 

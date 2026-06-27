@@ -1,6 +1,5 @@
 namespace Eff.Foundation
 
-open System
 open Eff
 
 module SubjectHistory =
@@ -14,15 +13,21 @@ module SubjectHistory =
 
     type StoredRecord<'record> = { Seq: Seq; Body: 'record }
 
+    [<RequireQualifiedAccess>]
+    type ConflictRecord<'record> =
+        | Found of StoredRecord<'record>
+        | Unavailable
+        | LookupFailed of message: string
+
     type AppendConflict<'record> =
         { Expected: Version
           Actual: Version
-          Conflicting: StoredRecord<'record> option }
+          Conflicting: ConflictRecord<'record> }
 
-    type AppendOutcome<'record> =
-        | Appended of next: Version
-        | IdempotentRetry of alreadyAt: Version * existing: StoredRecord<'record>
+    [<RequireQualifiedAccess>]
+    type AppendFailure<'record> =
         | Conflict of AppendConflict<'record>
+        | Failed of S2Errors.S2Failure
 
     type Cursor<'record> =
         { Codec: Codec<'record>
@@ -56,14 +61,15 @@ module SubjectHistory =
                 let! records = stream basin subject |> S2.read (S2.FromSeqNum seq) 1
 
                 match records with
-                | [] -> return Ok None
-                | first :: _ ->
+                | [] -> return Ok ConflictRecord.Unavailable
+                | first :: _ when first.SeqNum = seq ->
                     match decodeRecord codec first with
-                    | Ok record -> return Ok(Some record)
+                    | Ok record -> return Ok(ConflictRecord.Found record)
                     | Error error -> return Error error
+                | _ -> return Ok ConflictRecord.Unavailable
             with e ->
                 match S2Errors.classify e with
-                | S2Errors.RangeNotSatisfiable _ -> return Ok None
+                | S2Errors.RangeNotSatisfiable _ -> return Ok ConflictRecord.Unavailable
                 | _ -> return Error e.Message
         }
 
@@ -78,27 +84,16 @@ module SubjectHistory =
                 let! conflicting = tryReadOne basin codec subject (Seq expected)
 
                 return
-                    Error
-                        { Expected = Version expected
-                          Actual = Version actual
-                          Conflicting =
-                            match conflicting with
-                            | Ok record -> record
-                            | Error _ -> None }
-            | Error error -> return raise (Exception(sprintf "%A" error))
-        }
-
-    let appendIdempotent basin codec subject expected records =
-        async {
-            let! result = appendExpected basin codec subject expected records
-
-            match result with
-            | Ok next -> return Appended next
-            | Error conflict ->
-                match records, conflict.Conflicting with
-                | [ attempted ], Some existing when attempted = existing.Body ->
-                    return IdempotentRetry(conflict.Actual, existing)
-                | _ -> return Conflict conflict
+                    Error(
+                        AppendFailure.Conflict
+                            { Expected = Version expected
+                              Actual = Version actual
+                              Conflicting =
+                                match conflicting with
+                                | Ok record -> record
+                                | Error message -> ConflictRecord.LookupFailed message }
+                    )
+            | Error error -> return Error(AppendFailure.Failed error)
         }
 
     let append basin codec subject records =

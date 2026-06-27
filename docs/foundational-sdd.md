@@ -184,15 +184,19 @@ type StoredRecord<'record> =
     { Seq: Seq
       Body: 'record }
 
+type ConflictRecord<'record> =
+    | Found of StoredRecord<'record>
+    | Unavailable
+    | LookupFailed of message: string
+
 type AppendConflict<'record> =
     { Expected: Version
       Actual: Version
-      Conflicting: StoredRecord<'record> option }
+      Conflicting: ConflictRecord<'record> }
 
-type AppendOutcome<'record> =
-    | Appended of next: Version
-    | IdempotentRetry of alreadyAt: Version * existing: StoredRecord<'record>
+type AppendFailure<'record> =
     | Conflict of AppendConflict<'record>
+    | Failed of S2Errors.S2Failure
 
 type Codec<'record> =
     { Encode: 'record -> string
@@ -210,11 +214,7 @@ module SubjectHistory =
 
     val appendExpected :
         S2.Basin -> Codec<'record> -> SubjectId -> Version -> 'record list ->
-            Async<Result<Version, AppendConflict<'record>>>
-
-    val appendIdempotent :
-        S2.Basin -> Codec<'record> -> SubjectId -> Version -> 'record list ->
-            Async<AppendOutcome<'record>>
+            Async<Result<Version, AppendFailure<'record>>>
 
     val openCursor :
         S2.Basin -> Codec<'record> -> SubjectId -> Seq ->
@@ -230,8 +230,14 @@ module SubjectHistory =
 ```
 
 `appendExpected` is for unowned or contended admission records: create-run,
-external delivery dedupe, and other single-index claims. It must surface enough
-conflict information to distinguish same-record retry from a lost race.
+external delivery dedupe, and other single-index claims. It reports the winning
+record at the expected sequence when that exact record is still readable, but it
+does not infer idempotency from body equality. A caller that wants retry
+classification must put a unique attempt/command id in the record body and
+interpret conflicts at its own semantic layer.
+
+Non-conflict S2 failures stay typed as `S2Errors.S2Failure`; the foundation layer
+must not turn fencing-token loss or transient S2 errors into generic exceptions.
 
 `append` is for the owner-style path after a lane owner/fence has already been
 established. Fencing and owner-local reads are a later capability; this C1 only
@@ -250,8 +256,8 @@ Prove against real ephemeral S2 streams:
 - new subject starts at `Version 0`
 - append at expected version succeeds and advances the subject tail
 - stale append conflict returns expected version, actual version, and the
-  conflicting committed record when available
-- same-record stale retry is classified as idempotent retry
+  exact conflicting committed record when available
+- same-body stale append is still classified as conflict, not idempotent retry
 - different stale append is classified as conflict
 - deterministic fold applies committed records in order through a target version
 - follower read barrier is `tail` plus `foldTo` to that version

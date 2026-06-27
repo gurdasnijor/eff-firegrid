@@ -72,6 +72,10 @@ module Program =
 
     let cleanNode () = deleteDir "node_modules"
 
+    let cleanAll () =
+        clean ()
+        cleanNode ()
+
     let restoreTools () = run "dotnet" [ "tool"; "restore" ]
 
     let install () =
@@ -141,7 +145,7 @@ module Program =
 
         Target.create "Clean" (fun _ -> clean ())
         Target.create "CleanNode" (fun _ -> cleanNode ())
-        Target.create "CleanAll" (fun _ -> cleanNode ())
+        Target.create "CleanAll" (fun _ -> cleanAll ())
         Target.create "RestoreTools" (fun _ -> restoreTools ())
         Target.create "Install" (fun _ -> install ())
         Target.create "Build" (fun _ -> build ())

@@ -155,22 +155,25 @@ let main =
                     (async {
                         let stale = SubjectHistory.Version 0L
 
-                        let! retry =
-                            SubjectHistory.appendIdempotent
-                                basin
-                                WorkRecord.codec
-                                subject
-                                stale
-                                [ Started "invoice-123" ]
+                        let! sameBody =
+                            SubjectHistory.appendExpected basin WorkRecord.codec subject stale [ Started "invoice-123" ]
 
-                        match retry with
-                        | SubjectHistory.IdempotentRetry(alreadyAt, existing) ->
-                            Proof.check "same record retry is classified" (alreadyAt = SubjectHistory.Version 1L)
-                            Proof.check "retry exposes existing seq" (existing.Seq = SubjectHistory.Seq 0L)
-                        | other -> Proof.check (sprintf "unexpected retry outcome: %A" other) false
+                        match sameBody with
+                        | Error(SubjectHistory.AppendFailure.Conflict details) ->
+                            Proof.check
+                                "same-body stale append still conflicts"
+                                (details.Actual = SubjectHistory.Version 1L)
+
+                            Proof.check
+                                "same-body conflict exposes winning record"
+                                (match details.Conflicting with
+                                 | SubjectHistory.ConflictRecord.Found record ->
+                                     record.Seq = SubjectHistory.Seq 0L && record.Body = Started "invoice-123"
+                                 | _ -> false)
+                        | other -> Proof.check (sprintf "unexpected same-body outcome: %A" other) false
 
                         let! conflict =
-                            SubjectHistory.appendIdempotent
+                            SubjectHistory.appendExpected
                                 basin
                                 WorkRecord.codec
                                 subject
@@ -178,13 +181,14 @@ let main =
                                 [ Started "different-input" ]
 
                         match conflict with
-                        | SubjectHistory.Conflict details ->
+                        | Error(SubjectHistory.AppendFailure.Conflict details) ->
                             Proof.check "different stale append conflicts" (details.Actual = SubjectHistory.Version 1L)
 
                             Proof.check
                                 "conflict exposes winning record"
-                                (details.Conflicting
-                                 |> Option.exists (fun record -> record.Body = Started "invoice-123"))
+                                (match details.Conflicting with
+                                 | SubjectHistory.ConflictRecord.Found record -> record.Body = Started "invoice-123"
+                                 | _ -> false)
                         | other -> Proof.check (sprintf "unexpected conflict outcome: %A" other) false
                     })
 

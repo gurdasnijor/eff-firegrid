@@ -95,14 +95,8 @@ module Print =
 
     let outcome label outcome =
         match outcome with
-        | SubjectHistory.Appended next -> printfn "%s appended -> v%d" label (SubjectHistory.versionNumber next)
-        | SubjectHistory.IdempotentRetry(alreadyAt, existing) ->
-            printfn
-                "%s idempotent retry -> existing seq=%d, stream already at v%d"
-                label
-                (SubjectHistory.seqNumber existing.Seq)
-                (SubjectHistory.versionNumber alreadyAt)
-        | SubjectHistory.Conflict conflict ->
+        | Ok next -> printfn "%s appended -> v%d" label (SubjectHistory.versionNumber next)
+        | Error(SubjectHistory.AppendFailure.Conflict conflict) ->
             printfn
                 "%s conflict -> expected v%d, actual v%d"
                 label
@@ -110,9 +104,12 @@ module Print =
                 (SubjectHistory.versionNumber conflict.Actual)
 
             match conflict.Conflicting with
-            | Some record ->
+            | SubjectHistory.ConflictRecord.Found record ->
                 printfn "  conflicting record at seq %d: %A" (SubjectHistory.seqNumber record.Seq) record.Body
-            | None -> printfn "  conflicting record unavailable"
+            | SubjectHistory.ConflictRecord.Unavailable -> printfn "  conflicting record unavailable"
+            | SubjectHistory.ConflictRecord.LookupFailed message ->
+                printfn "  conflicting record lookup failed: %s" message
+        | Error(SubjectHistory.AppendFailure.Failed failure) -> printfn "%s failed -> %A" label failure
 
     let snapshot label snapshot version =
         printfn "%s at v%d:" label (SubjectHistory.versionNumber version)
@@ -128,20 +125,21 @@ module Lab =
             printfn ""
             printfn "Use case: unowned admission records, create-run, external delivery dedup."
             printfn "Tradeoff: every concurrent writer races on the current tail."
+            printfn "Note: same-body stale appends are still conflicts; caller-owned ids prove retries."
             printfn ""
 
             let! tail0 = SubjectHistory.tail basin subject
             Print.version "initial tail" tail0
 
             let start = Started "invoice-123"
-            let! first = SubjectHistory.appendIdempotent basin WorkRecord.codec subject tail0 [ start ]
+            let! first = SubjectHistory.appendExpected basin WorkRecord.codec subject tail0 [ start ]
             Print.outcome "host A append Started" first
 
-            let! retry = SubjectHistory.appendIdempotent basin WorkRecord.codec subject tail0 [ start ]
-            Print.outcome "host A retry same append" retry
+            let! sameBody = SubjectHistory.appendExpected basin WorkRecord.codec subject tail0 [ start ]
+            Print.outcome "host A stale same-body append" sameBody
 
             let! different =
-                SubjectHistory.appendIdempotent basin WorkRecord.codec subject tail0 [ Started "different-input" ]
+                SubjectHistory.appendExpected basin WorkRecord.codec subject tail0 [ Started "different-input" ]
 
             Print.outcome "host B stale different append" different
         }

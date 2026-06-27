@@ -249,6 +249,16 @@ Prove against real ephemeral S2 streams:
 - conditional append conflict maps to `AppendConflict`
 - typed read session tails records
 - typed read cursor pulls one record at a time without closing the session
+- `readFrom` reads from a sequence to the current tail, paging internally rather
+  than silently returning one bounded batch
+
+Notes:
+
+- `TypedReadSession.take` is a bounded one-shot helper; it cancels/releases the
+  underlying session after taking records.
+- `TypedReadCursor.tryNext` is the reusable pull-one path needed by StateView.
+- The StateView proof must exercise `tryNext` while blocked at the tail and
+  closing a cursor while a pull is pending.
 
 ## Capability C2: StateView
 

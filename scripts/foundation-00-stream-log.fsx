@@ -198,12 +198,13 @@ let main =
                         let! tail = StreamLog.checkTail basin streamId
                         let (StreamLog.StreamVersion start) = tail
                         let! cursor = StreamLog.openReadCursor basin DemoEvent.codec streamId (StreamLog.SeqNum start)
+                        let! pendingFirst = Async.StartChild(cursor |> StreamLog.tryNext)
 
                         let! writer = StreamLog.openAppendSession basin DemoEvent.codec streamId
                         let! ticket = writer |> StreamLog.submit [ Said "cursor-a"; Said "cursor-b" ]
                         let! _ = ticket.Ack
 
-                        let! first = cursor |> StreamLog.tryNext
+                        let! first = pendingFirst
                         let! second = cursor |> StreamLog.tryNext
 
                         match first, second with
@@ -218,6 +219,29 @@ let main =
 
                         do! cursor |> StreamLog.closeReadCursor
                         do! writer |> StreamLog.closeAppendSession
+                    })
+
+            do!
+                Proof.section
+                    "readFrom reads past one batch"
+                    (async {
+                        let! tail = StreamLog.checkTail basin streamId
+                        let (StreamLog.StreamVersion start) = tail
+
+                        let firstBatch = [ for i in 1..600 -> Said(sprintf "bulk-%d" i) ]
+                        let secondBatch = [ for i in 601..1005 -> Said(sprintf "bulk-%d" i) ]
+
+                        let! _ = StreamLog.append basin DemoEvent.codec streamId firstBatch
+                        let! _ = StreamLog.append basin DemoEvent.codec streamId secondBatch
+
+                        let! read = StreamLog.readFrom basin DemoEvent.codec streamId (StreamLog.SeqNum start)
+
+                        match read with
+                        | Error error -> Proof.check ("bulk read decodes: " + error) false
+                        | Ok records ->
+                            Proof.check "bulk read count crosses 1000" (records.Length = 1005)
+                            Proof.check "bulk first event" (records.Head.Event = Said "bulk-1")
+                            Proof.check "bulk last event" ((records |> List.last).Event = Said "bulk-1005")
                     })
 
             do! basin |> S2.deleteStream streamName

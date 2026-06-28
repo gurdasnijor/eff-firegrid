@@ -1,6 +1,7 @@
 namespace Eff.Foundation
 
 open Eff
+open Eff.Telemetry
 
 module SubjectHistory =
     type SubjectId = SubjectId of string
@@ -54,6 +55,7 @@ module SubjectHistory =
             let! pos = stream basin subject |> S2.checkTail
             return Version pos.SeqNum
         }
+        |> Trace.withSpan "subject_history.tail" [ "subject", streamName subject ]
 
     let private tryReadOne basin codec subject (Seq seq) =
         async {
@@ -79,8 +81,11 @@ module SubjectHistory =
             let! appended = stream basin subject |> S2.tryAppendWith opts (encodeRecords codec records)
 
             match appended with
-            | Ok ack -> return Ok(Version ack.End.SeqNum)
+            | Ok ack ->
+                do! Trace.annotate [ "subject_history.append.status", "ok" ]
+                return Ok(Version ack.End.SeqNum)
             | Error(S2Errors.SeqNumMismatch actual) ->
+                do! Trace.annotate [ "subject_history.append.status", "conflict" ]
                 let! conflicting = tryReadOne basin codec subject (Seq expected)
 
                 return
@@ -93,14 +98,24 @@ module SubjectHistory =
                                 | Ok record -> record
                                 | Error message -> ConflictRecord.LookupFailed message }
                     )
-            | Error error -> return Error(AppendFailure.Failed error)
+            | Error error ->
+                do! Trace.annotate [ "subject_history.append.status", "failed" ]
+                return Error(AppendFailure.Failed error)
         }
+        |> Trace.withSpan
+            "subject_history.append_expected"
+            [ "subject", streamName subject
+              "expected.version", string expected
+              "record.count", string records.Length ]
 
     let append basin codec subject records =
         async {
             let! ack = stream basin subject |> S2.append (encodeRecords codec records)
             return Version ack.End.SeqNum
         }
+        |> Trace.withSpan
+            "subject_history.append"
+            [ "subject", streamName subject; "record.count", string records.Length ]
 
     let openCursor basin codec subject (Seq from) =
         async {
@@ -157,3 +172,8 @@ module SubjectHistory =
 
                 return raise e
         }
+        |> Trace.withSpan
+            "subject_history.fold_to"
+            [ "subject", streamName subject
+              "from.seq", string (seqNumber from)
+              "until.version", string (versionNumber until) ]

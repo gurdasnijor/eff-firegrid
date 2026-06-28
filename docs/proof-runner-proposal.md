@@ -1,136 +1,244 @@
-# Eff Firegrid Proof Runner Proposal
+# Eff Firegrid Proof Runner SDD
 
 ## Status
 
-Proposed revision.
+Proposed, with Milestone 0 implementation started.
 
-The previous draft mixed two different ideas:
+This SDD replaces the earlier custom in-memory evidence model. The proof
+runner should use the same observability substrate the production system needs:
+OpenTelemetry spans emitted from instrumented production code, runner lifecycle
+code, and host processes. Proof verification queries those traces through
+`chdb`, the npm package for `chdb-io/chdb-node`.
 
-1. A small compiled assertion harness with `section`, `check`, and
-   `expectEqual`.
-2. A property runner like `fluent-firegrid/apps/proofs`, where a proof declares
-   resources, runs a workload, captures evidence, and verifies the result after
-   the run.
-
-Only the second shape is the target. The first shape is useful as a temporary
-test helper, but it is not enough proof infrastructure. It does not model
-resources, hosts, workload results, operation histories, domain events, trial
-identity, reports, or replayable counterexamples.
-
-The proof runner should be a compiled F# system with ergonomic computation
-expressions. Proof definitions remain compiled into `eff-firegrid.fsproj`, so
-`dotnet build`, FS1182, and `fsharplint` enforce that they stay aligned with
-production APIs.
+The proof runner is validation infrastructure. It is not a rapid iteration
+REPL, not a `.fsx` launcher, and not a proof-local fake runtime.
 
 ## Prior Art
 
-The target shape is aligned with `fluent-firegrid/apps/proofs`, especially:
+The target shape remains aligned with `fluent-firegrid/apps/proofs`,
+especially:
 
 - `proof(...).describedAs(...).spec(...)`
 - `property(...).s2Lite(...).hosts(...).workload(...).verify(...)`
 - `processHost(...)` resources with readiness probes
 - workload result checks plus evidence checks
+- host choreography for live fencing
 
-The F# implementation should not copy TypeScript APIs literally, but the
-semantic phases should match:
-
-1. Define a proof and description.
-2. Provision resources such as `s2 lite` and one or more host processes.
-3. Run a workload against production APIs, HTTP handlers, or generated clients.
-4. Capture workload results and runner evidence.
-5. Verify the result and evidence after the workload completes.
-6. Tear resources down, or preserve them on failure when requested.
+The F# API should be idiomatic F#, not a literal TypeScript port. Computation
+expressions are the right shape for declaration. Workloads stay ordinary
+`Async<'result>` values.
 
 ## Goals
 
-1. Keep proofs compiled and enforced by the normal project build.
-2. Make proof authoring feel like normal F# async code.
-3. Support multiple live host processes as first-class property resources.
-4. Separate resource setup, workload execution, and verification.
-5. Make workload result verification explicit.
-6. Capture runner evidence for hosts, S2, operations, and later domain events.
-7. Keep production behavior under test in `src/Foundation` and later production
+1. Keep proofs compiled into `eff-firegrid.fsproj`, so `dotnet build`, FS1182,
+   and `fsharplint` catch drift from production APIs.
+2. Make production instrumentation look like Effect's `withSpan`: local,
+   explicit, and close to the code being proven.
+3. Use OpenTelemetry traces as the canonical evidence ledger for proofs and
+   baseline observability.
+4. Query proof evidence with `chdb` instead of introducing a second custom
+   evidence database.
+5. Support runner-owned resources: `s2 lite`, one or more host processes,
+   readiness probes, teardown, and failure preservation.
+6. Support deterministic faults and negative controls, so a green proof also
+   demonstrates that it would fail under a known regression.
+7. Keep production behavior under test in `src/Foundation` and later runtime
    modules, not in proof-local substitutes.
-8. Require adversarial controls that prove a proof fails when the protected
-   behavior is intentionally broken.
-9. Keep deterministic simulation as a later mode, not the first implementation.
+8. Define operation history and linearizability early enough that concurrent
+   object proofs do not stop at result equality.
 
 ## Non-Goals
 
 1. Do not use `.fsx` proof launchers.
 2. Do not center the API on `section/check/expectEqual`.
-3. Do not require a full linearizability checker for the first proof.
-4. Do not make raw traces the only canonical evidence format.
+3. Do not introduce a second runner-specific evidence bus unless OTel cannot
+   represent a required fact.
+4. Do not require an out-of-band preload/bootstrap script for normal production
+   instrumentation.
 5. Do not create verification-only workflow/object facades that hide production
    behavior.
 6. Do not start with a large pseudo-language that is not valid F#.
+7. Do not implement a full linearizability checker before the first executable
+   proof runner exists.
 
-## Guarantee Model
+## Architecture
 
-A green proof is not a guarantee by itself. It only says that one workload
-passed against the current implementation. To trust a proof, the runner must
-also establish that the proof would fail under a known regression or fault.
+The system has four layers:
 
-Every durable correctness claim should have two sides:
+1. **Production instrumentation** in `src/Telemetry` and production modules.
+   Code under test emits spans directly with `Trace.withSpan`,
+   `Trace.annotate`, and `Trace.event`.
+2. **Runtime OTel setup** in `Eff.Telemetry.Otel`. Node/Fable entrypoints call
+   `Otel.startFromEnv` once at process start and `Otel.shutdown` at process
+   exit.
+3. **Proof runner resources** in `src/Proofs`. The runner starts S2, starts
+   host processes, injects env, records runner lifecycle spans, runs workloads,
+   runs negative controls, writes reports, and tears down resources.
+4. **Trace verification** in `src/Proofs/TraceSql.fs`. Verifiers query exported
+   trace files or tables through `chdb`.
 
-1. **Positive control**: the production implementation satisfies the property.
-2. **Negative control**: the same property fails when the runner injects a
-   targeted mutation, append failure, crash point, or known-bad variant.
+There is one evidence path:
 
-This is the difference between "30 checks passed" and "the checks pin the
-behavior." Manual negative testing, such as temporarily reintroducing a broken
-parser and watching a proof fail, is useful evidence but should become a runner
-feature.
-
-Authoring shape:
-
-```fsharp
-let effectLedger =
-    proof "effect-ledger" {
-        describedAs
-            "Journaled steps replay effectively once, re-run after crash-before-result, and use deterministic ids."
-
-        property (
-            property "effect-ledger-proof" {
-                s2Lite LocalRoot
-
-                workload EffectLedgerProof.runHappyPath
-
-                verify [
-                    Expect.workload "journaled step invariants hold" EffectLedgerProof.invariantsHold
-                ]
-
-                negativeControl "broken result decoder is caught" {
-                    mutation (Mutation.replace "EffectLedger.decodeResult" EffectLedgerFaults.destructiveSplit)
-                    expectFailure "journaled step invariants hold"
-                }
-            })
-    }
+```text
+compiled proof/workload/host
+  -> production Trace.withSpan callsites
+  -> OpenTelemetry spans
+  -> runner-owned OTLP receiver/export file
+  -> chdb SQL verification
+  -> proof checks and JSON report
 ```
 
-The exact mutation mechanism can start simple. A negative control may be:
+The runner may keep a small in-memory summary of resources for convenience, but
+verification evidence should come from the trace store whenever possible.
 
-- a proof-owned alternate codec or reducer marked as intentionally broken
-- a runner-owned S2 append failure at a deterministic boundary
-- a process crash after a named evidence event
-- a build-time mutation hook if the codebase later supports mutation testing
+## Production Instrumentation API
 
-The rule is strict: a claim is not "proven" unless the positive proof passes
-and its negative controls fail for the expected reason.
+Milestone 0 starts with a small Fable-friendly API:
 
-## Target Authoring Shape
+```fsharp
+namespace Eff.Telemetry
 
-Use computation expressions, but keep them shallow. A proof is a compiled F#
-value. A property is a compiled F# value. The workload is ordinary
-`Async<'result>`.
+module Trace =
+    type Attribute = string * string
 
-The preferred shape is a valid F# expression, not a sketch language:
+    val withSpan:
+        name: string
+        -> attributes: Attribute list
+        -> work: Async<'a>
+        -> Async<'a>
+
+    val annotate: attributes: Attribute list -> Async<unit>
+    val event: name: string -> attributes: Attribute list -> Async<unit>
+```
+
+Callsites should be inside the actual modules being proven:
+
+```fsharp
+let appendExpected basin codec subject expected records =
+    async {
+        let! appended = ...
+
+        match appended with
+        | Ok ack ->
+            do! Trace.annotate [ "subject_history.append.status", "ok" ]
+            return Ok ack
+        | Error(S2Errors.SeqNumMismatch actual) ->
+            do! Trace.annotate [ "subject_history.append.status", "conflict" ]
+            ...
+    }
+    |> Trace.withSpan
+        "subject_history.append_expected"
+        [ "subject", streamName subject
+          "expected.version", string expected
+          "record.count", string records.Length ]
+```
+
+This is the intended ergonomic model: the proof runner does not infer important
+domain evidence from logs or wrappers. The production code emits the evidence
+that matters for the claim.
+
+## Runtime OTel Setup
+
+Node/Fable entrypoints should start OTel explicitly:
+
+```fsharp
+do!
+    Otel.startFromEnv
+        "eff-firegrid-proof-host"
+        [ "eff.trial_id", trialId
+          "eff.host_id", hostId ]
+
+try
+    do! runHost ()
+finally
+    do! Otel.shutdown ()
+```
+
+The runner injects environment, not instrumentation code:
+
+- `EFF_TRIAL_ID`
+- `EFF_HOST_ID`
+- `OTEL_SERVICE_NAME`
+- `OTEL_RESOURCE_ATTRIBUTES`
+- `OTEL_EXPORTER_OTLP_ENDPOINT`
+- `S2_ENDPOINT`
+
+This avoids `node --require` or an out-of-band bootstrap while still giving the
+runner control over where spans are exported.
+
+## Trace Store And chDB
+
+The runner owns a per-trial trace directory:
+
+```text
+.eff-firegrid/proofs/
+  <trial-id>/
+    traces/
+      spans.jsonl
+      spans.parquet
+    report.json
+```
+
+The first exporter can be simple:
+
+1. Start a local OTLP HTTP receiver for the trial.
+2. Convert received spans into JSONL with stable columns.
+3. Optionally write Parquet once the schema stabilizes.
+4. Query with `chdb`.
+
+Initial `spans` columns:
+
+```text
+trial_id String
+service_name String
+host_id Nullable(String)
+trace_id String
+span_id String
+parent_span_id Nullable(String)
+name String
+kind String
+status_code String
+status_message Nullable(String)
+start_unix_nanos UInt64
+end_unix_nanos UInt64
+attributes JSON
+events JSON
+```
+
+Example verifier query:
+
+```sql
+SELECT count()
+FROM file('spans.jsonl', JSONEachRow)
+WHERE trial_id = {trial_id:String}
+  AND name = 'verification.host.ready'
+  AND attributes.`host.name` = 'a'
+```
+
+The F# API should keep verifiers typed at the edge:
+
+```fsharp
+module TraceSql =
+    type Query =
+        { Sql: string
+          Parameters: Map<string, string> }
+
+    val scalarInt: TraceStore -> Query -> Async<int>
+    val exists: TraceStore -> Query -> Async<bool>
+```
+
+The implementation can bind to `chdb` from Fable using small interop functions.
+
+## Authoring Shape
+
+Use shallow computation expressions. A proof is a compiled F# value; a property
+has resources, workload, and verifiers.
 
 ```fsharp
 let storeObjectSerialization =
     proof "store.object-serialization" {
         describedAs
-            "Concurrent same-key actor calls serialize through the S2-backed actor log and do not lose writes."
+            "Concurrent same-key object calls serialize through the S2-backed object log and do not lose writes."
 
         property (
             property "store.object-serialization-proof" {
@@ -164,31 +272,21 @@ let storeObjectSerialization =
                         {| CompletedCalls = 2
                            MaxResult = 12
                            Value = 12 |}
+
+                    TraceExpect.spanExists
+                        "object append happened"
+                        "object.append"
+                        [ "object.key", "counter-1" ]
                 ]
             })
     }
 ```
 
-This is intentionally close to the TypeScript proof:
-
-```ts
-proof("store.object-serialization")
-  .describedAs(...)
-  .spec(({ property, trialId }) =>
-    property("store.object-serialization-proof")
-      .s2Lite(...)
-      .workload(...)
-      .verify([...])
-  )
-```
-
 ## Multiple Host Processes
 
-Multiple host processes should be property resources. The runner starts them,
-injects standard environment, waits for readiness, records evidence, and tears
+Multiple host processes are property resources. The runner starts them, injects
+standard environment, waits for readiness, records lifecycle spans, and tears
 them down.
-
-Authoring shape:
 
 ```fsharp
 let objectLiveFencing =
@@ -206,8 +304,6 @@ let objectLiveFencing =
                         args [ "exec"; "tsx"; workerPath ]
                         env "HOST_PORT" (string portA)
                         readinessUrl (hostA + "/ready")
-                        readinessAttempts 400
-                        readinessIntervalMs 50
                     }
 
                     processHost "b" {
@@ -215,63 +311,107 @@ let objectLiveFencing =
                         args [ "exec"; "tsx"; workerPath ]
                         env "HOST_PORT" (string portB)
                         readinessUrl (hostB + "/ready")
-                        readinessAttempts 400
-                        readinessIntervalMs 50
                     }
                 ]
 
-                workload (fun ctx ->
-                    async {
-                        let hostA = ctx.Hosts["a"].Endpoint
-                        let hostB = ctx.Hosts["b"].Endpoint
-                        let s2Endpoint = ctx.S2.Endpoint
-
-                        let namespaceName =
-                            "object-live-fencing-" + ctx.TrialId
-
-                        let streamName =
-                            ObjectRuntime.invocationStreamName namespaceName "counter-1" "cross-host-counter"
-
-                        let! deposedRequest =
-                            Http.post (hostA + "/deposed-add?by=5")
-                            |> Async.StartChild
-
-                        let! startedCount =
-                            ObjectRuntime.waitForStartedCount s2Endpoint streamName 2
-
-                        do! Http.post (hostB + "/now?value=3000")
-
-                        let! takeover =
-                            Http.postJson<{| HostId: string; Value: int |}> (hostB + "/add?by=7")
-
-                        do! Async.Sleep 1000
-                        do! deposedRequest |> Async.Ignore
-
-                        let! loaded =
-                            Http.getJson<{| HostId: string; Value: int |}> (hostB + "/value")
-
-                        return
-                            {| DeposedStartedEvents = startedCount
-                               LateOwnerDidNotChangeValue = loaded.Value = takeover.Value
-                               TakeoverHostId = takeover.HostId |}
-                    })
+                workload StoreObjectLiveFencing.run
 
                 verify [
-                    Expect.workloadResult
-                        {| DeposedStartedEvents = 2
-                           LateOwnerDidNotChangeValue = true
-                           TakeoverHostId = "b" |}
+                    Expect.workload "late owner did not change value" (fun r ->
+                        r.LateOwnerDidNotChangeValue)
 
-                    Evidence.hostStarted "a"
-                    Evidence.hostStarted "b"
-                    Evidence.s2LiteStarted
+                    TraceExpect.spanExists
+                        "host a was ready"
+                        "verification.host.ready"
+                        [ "host.name", "a" ]
+
+                    TraceExpect.spanExists
+                        "host b was ready"
+                        "verification.host.ready"
+                        [ "host.name", "b" ]
                 ]
             })
     }
 ```
 
 The important part is ownership: proof definitions describe host specs; the
-runner owns actual process lifecycle.
+runner owns actual process lifecycle and emits runner lifecycle spans.
+
+## Guarantee Model
+
+A green proof is not a guarantee by itself. It says one workload passed against
+the current implementation. To trust a proof, the runner must also establish
+that the proof would fail under a known regression or deterministic fault.
+
+Every durable correctness claim needs:
+
+1. **Positive control**: the production implementation satisfies the property.
+2. **Negative control**: the same property fails when the runner injects a
+   targeted mutation, append failure, crash point, or known-bad variant.
+
+Authoring shape:
+
+```fsharp
+property "effect-ledger-proof" {
+    s2Lite LocalRoot
+
+    workload EffectLedgerProof.runHappyPath
+
+    verify [
+        Expect.workload "journaled step invariants hold" EffectLedgerProof.invariantsHold
+    ]
+
+    negativeControl "broken result decoder is caught" {
+        mutation (Mutation.replace "EffectLedger.decodeResult" EffectLedgerFaults.destructiveSplit)
+        expectFailure "journaled step invariants hold"
+    }
+}
+```
+
+The exact mutation mechanism can start simple. A negative control may be:
+
+- a proof-owned alternate codec or reducer marked as intentionally broken
+- a runner-owned S2 append failure at a deterministic boundary
+- a process crash after a named trace span or event
+- a build-time mutation hook if the codebase later supports mutation testing
+
+The rule is strict: a claim is not proven unless the positive proof passes and
+its negative controls fail for the expected reason.
+
+## Deterministic Fault Injection
+
+Faults are not only process kills. The runner needs deterministic, replayable
+faults at storage and trace boundaries.
+
+Initial fault controls:
+
+```fsharp
+type FaultController =
+    abstract FailAppend: ordinal: int -> Async<unit>
+    abstract KillHost: name: string -> Async<unit>
+    abstract RestartHost: name: string -> Async<unit>
+    abstract KillAfterSpan:
+        host: string
+        * spanName: string
+        * attributes: Map<string, string>
+        -> Async<unit>
+```
+
+The first high-value cases:
+
+1. **Effect ledger append boundaries**: fail append `k`, restart by re-folding,
+   and assert effectively-once still holds at every journal boundary.
+2. **Crash before result**: kill after the intent span/event but before the
+   result span/event, then assert the effect may run again and the ledger
+   records one committed result.
+3. **Fencing**: install a newer fence token, then assert an older owner gets
+   `FencingTokenMismatch` and cannot commit.
+4. **Live owner race**: kill or pause host `a` after trace evidence says it
+   started a call, allow host `b` to take over, then assert host `a` cannot
+   commit stale state.
+
+Every fault must be represented in spans, report JSON, and replay command.
+Random faults are allowed only when seeded and reported.
 
 ## Core Types
 
@@ -291,24 +431,6 @@ type PropertySpec<'result> =
       Verifiers: Check<'result> list
       NegativeControls: NegativeControlSpec list }
 
-type S2LitePersistence =
-    | LocalRoot
-
-type S2LiteSpec =
-    { Persistence: S2LitePersistence }
-
-type Readiness =
-    { Url: string
-      Attempts: int
-      IntervalMs: int }
-
-type HostSpec =
-    { Name: string
-      Command: string
-      Args: string list
-      Env: Map<string, string>
-      Readiness: Readiness option }
-
 type RunningS2 =
     { Endpoint: string
       Basin: S2.Basin }
@@ -318,11 +440,16 @@ type RunningHost =
       Endpoint: string
       ProcessId: int }
 
+type TraceStore =
+    { TrialId: string
+      Root: string
+      SpansJsonl: string }
+
 type WorkloadContext =
     { TrialId: string
       S2: RunningS2
       Hosts: Map<string, RunningHost>
-      Evidence: EvidenceSink
+      Traces: TraceStore
       Faults: FaultController }
 
 type CompletedTrial<'result> =
@@ -330,37 +457,12 @@ type CompletedTrial<'result> =
       PropertyName: string
       TrialId: string
       Result: Result<'result, exn>
-      Evidence: EvidenceStore
+      Traces: TraceStore
       NegativeControlResults: NegativeControlResult list }
 
 type Check<'result> =
     { Name: string
       Run: CompletedTrial<'result> -> Async<Result<unit, string>> }
-
-type FaultPoint =
-    { Name: string
-      Attributes: Map<string, string> }
-
-type FaultAction =
-    | FailAppend of ordinal: int
-    | KillHost of name: string
-    | KillAfterEvidence of host: string * eventName: string * attributes: Map<string, string>
-    | UseMutation of name: string
-
-type NegativeControlSpec =
-    { Name: string
-      Faults: FaultAction list
-      ExpectedFailedCheck: string option }
-
-type NegativeControlResult =
-    { Name: string
-      Status: NegativeControlStatus
-      FailedCheck: string option }
-
-and NegativeControlStatus =
-    | FailedAsExpected
-    | UnexpectedPass
-    | FailedForWrongReason of string
 ```
 
 The first implementation can constrain all properties to require `s2Lite`.
@@ -371,219 +473,70 @@ Relax that later if a proof does not need S2.
 For each selected proof property:
 
 1. Generate a trial id.
-2. Start `s2 lite` if requested.
-3. Start all declared host processes.
-4. Inject standard environment into every host:
-   - `EFF_TRIAL_ID`
-   - `EFF_HOST_ID`
-   - `S2_ENDPOINT`
-   - user-specified env such as `HOST_PORT`
-5. Wait for every readiness probe.
-6. Record `verification.host.start` evidence for each host.
-7. Run the workload.
-8. Capture the workload result or exception.
-9. Run verifiers against `CompletedTrial`.
-10. Run every negative control as a separate trial.
-11. Assert every negative control fails for the expected reason.
-12. Write a JSON report when requested, on positive failure, or on unexpected
+2. Create a per-trial root directory.
+3. Start the OTLP receiver/exporter for the trial.
+4. Start `s2 lite` if requested.
+5. Start all declared host processes.
+6. Inject standard environment into every host.
+7. Wait for every readiness probe.
+8. Emit `verification.host.ready` and resource lifecycle spans.
+9. Run the workload.
+10. Capture the workload result or exception.
+11. Flush spans into the trace store.
+12. Run verifiers against `CompletedTrial`.
+13. Run every negative control as a separate trial.
+14. Assert every negative control fails for the expected reason.
+15. Write a JSON report when requested, on positive failure, or on unexpected
     negative-control pass.
-13. Stop hosts in reverse creation order.
-14. Stop `s2 lite`, unless preservation is requested after a failure.
+16. Stop hosts in reverse creation order.
+17. Stop `s2 lite`, unless preservation is requested after a failure.
+18. Stop the OTLP receiver after final span flush.
 
-This runner order is what makes checks such as `Evidence.hostStarted "a"` real.
-They assert runner-owned evidence, not proof-local guesses.
+Checks such as `TraceExpect.spanExists "host a ready"` assert runner-observed
+spans, not proof-local guesses.
 
-## Deterministic Fault Injection
+## Operation History And Linearizability
 
-Faults are not only process kills. The runner needs deterministic, replayable
-faults at storage and evidence boundaries.
+Workload-result equality checks one outcome. It does not prove a concurrent
+history is legal. Operation history should be represented as spans using a
+stable schema.
 
-Initial fault controls:
-
-```fsharp
-type FaultController =
-    abstract FailAppend: ordinal: int -> Async<unit>
-    abstract KillHost: name: string -> Async<unit>
-    abstract RestartHost: name: string -> Async<unit>
-    abstract KillAfterEvidence:
-        host: string
-        * eventName: string
-        * attributes: Map<string, string>
-        -> Async<unit>
-```
-
-The first high-value cases:
-
-1. **Effect ledger append boundaries**: fail append `k`, restart by re-folding,
-   and assert effectively-once still holds at every journal boundary.
-2. **Crash before result**: kill after the intent record but before the result
-   record, then assert the effect may run again and the ledger records one
-   committed result.
-3. **Fencing**: install a newer fence token, then assert an older owner gets
-   `FencingTokenMismatch` and cannot commit.
-4. **Live owner race**: kill or pause host `a` after evidence says it started a
-   call, allow host `b` to take over, then assert host `a` cannot commit stale
-   state.
-
-Every fault must be included in the trial report and replay command. Random
-faults are allowed only when seeded and reported.
-
-## Computation Expression Modules
-
-Recommended source layout:
+Required operation span attributes:
 
 ```text
-src/
-  Proofs/
-    Proof.fs          # proof CE and Proof<'result>
-    Property.fs       # property CE and PropertySpec<'result>
-    ProcessHost.fs    # processHost CE, readiness, lifecycle
-    S2Lite.fs         # s2 lite supervisor
-    Expect.fs         # workloadResult, predicate
-    Evidence.fs       # initial runner evidence checks
-    Reports.fs        # JSON reports
-    Runner.fs         # selection, execution, summary, exit code
-    Registry.fs       # compiled list of proofs
+eff.operation.id
+eff.operation.client_id
+eff.operation.name
+eff.operation.key
+eff.operation.input_json
+eff.operation.output_json
+eff.operation.error_json
+eff.operation.status
 ```
 
-Avoid a central `Harness.fs` abstraction. If an assertion helper survives, keep
-it private or compatibility-only. The proof runner is `Property + Runner`, not
-`Context + check`.
-
-## Initial Evidence
-
-Start with runner-owned evidence. It is enough to make host and S2 checks real.
+The model interface should be defined before full checker implementation:
 
 ```fsharp
-type EvidenceEvent =
-    { TrialId: string
-      Category: string
-      Name: string
-      Subject: string option
-      Attributes: Map<string, string>
-      TimeNanos: int64 }
-```
-
-Initial events:
-
-- `verification.s2_lite.start`
-- `verification.s2_lite.stop`
-- `verification.host.start`
-- `verification.host.ready`
-- `verification.host.stop`
-- `verification.host.kill`
-- `verification.workload.start`
-- `verification.workload.finish`
-- `verification.fault.injected`
-- `verification.negative_control.start`
-- `verification.negative_control.finish`
-
-Initial checks:
-
-```fsharp
-module Expect =
-    val workloadResult: expected: 'result -> Check<'result> when 'result: equality
-    val workload: name: string -> predicate: ('result -> bool) -> Check<'result>
-
-module Evidence =
-    val hostStarted: name: string -> Check<'result>
-    val hostReady: name: string -> Check<'result>
-    val s2LiteStarted: Check<'result>
-    val faultInjected: name: string -> Check<'result>
-```
-
-SQL over evidence can come later. The first runner can query an in-memory
-`EvidenceEvent list`.
-
-## Operation Evidence
-
-Operation history is required before linearizability checks. It should not be
-reconstructed from logs or raw spans.
-
-```fsharp
-type OperationStatus =
-    | Ok
-    | Error
-    | Interrupted
-
 type OperationEvent =
-    { TrialId: string
-      ClientId: string
+    { ClientId: string
       OperationId: string
       Name: string
       Key: string option
       InputJson: string
       OutputJson: string option
       ErrorJson: string option
-      Status: OperationStatus
-      CallTimeNanos: int64
-      ReturnTimeNanos: int64 }
-```
+      Status: string
+      CallTimeNanos: uint64
+      ReturnTimeNanos: uint64 }
 
-The model interface should be defined early, even if the first checker is
-minimal. Workload-result equality checks one outcome; it does not prove a
-concurrent history is legal.
-
-```fsharp
 type SequentialModel<'state> =
     { Name: string
       Initial: 'state
       Step: 'state -> OperationEvent -> Result<'state, string> }
-
-module Linearizability =
-    val check:
-        model: SequentialModel<'state>
-        -> operations: OperationEvent list
-        -> Result<unit, string>
 ```
 
-The first object serialization proof may start with workload-result checks, but
-the guarantee for concurrent object behavior is operation recording plus a
-linearizability checker against a sequential counter model.
-
-Authoring shape when operation history lands:
-
-```fsharp
-verify [
-    Expect.workloadResult {| CompletedCalls = 2; MaxResult = 12; Value = 12 |}
-    Linearizability.expect CounterModel.model "counter-1"
-]
-```
-
-## Generated Trials And Shrinking
-
-Example proofs are smoke tests unless they cover a generated space. The runner
-should support seeded trial generation once a stable property runner exists.
-
-Initial shape:
-
-```fsharp
-property "store.object-serialization-generated" {
-    s2Lite LocalRoot
-
-    generated {
-        seedFromTrialId
-        trials 100
-        shrink true
-    }
-
-    workload CounterWorkloads.generatedCommands
-
-    verify [
-        Linearizability.expect CounterModel.model "counter-1"
-    ]
-}
-```
-
-Reports must include:
-
-- seed
-- generated command sequence
-- fault plan
-- minimized counterexample when shrinking succeeds
-- replay command with the exact seed and trial id
-
-This is not a Milestone 1 requirement, but the data model should not block it.
+The checker loads `OperationEvent` values from span rows and runs a
+Porcupine/Knossos-style search against the sequential model.
 
 ## Reports
 
@@ -598,8 +551,10 @@ rerunning immediately.
   "status": "failed",
   "failedChecks": [],
   "resources": [],
-  "evidence": [],
-  "operations": [],
+  "traceStore": {
+    "spansJsonl": ".eff-firegrid/proofs/<trial>/traces/spans.jsonl"
+  },
+  "queries": [],
   "negativeControls": [],
   "faultPlan": [],
   "seed": 123456,
@@ -608,7 +563,7 @@ rerunning immediately.
 }
 ```
 
-The report format can grow, but the first version should include:
+Reports must include:
 
 - proof name
 - property name
@@ -617,7 +572,8 @@ The report format can grow, but the first version should include:
 - failed checks
 - host metadata
 - S2 metadata
-- runner evidence
+- trace store paths
+- failed SQL queries or query summaries
 - negative-control results
 - fault plan
 - seed and generated workload, when present
@@ -628,27 +584,12 @@ The report format can grow, but the first version should include:
 Narrative checkboxes drift. The runner should bind durable claims to proofs and
 fail CI when a claim marked as proven lacks a passing proof.
 
-Claim metadata can start as a small compiled value:
-
 ```fsharp
-type ClaimId = ClaimId of string
-
 type ClaimCoverage =
-    { Claim: ClaimId
+    { Claim: string
       Proofs: string list
       RequiredChecks: string list
       RequiresNegativeControl: bool }
-```
-
-Proofs then declare coverage:
-
-```fsharp
-coverage [
-    covers "effect-ledger.effectively-once-replay" {
-        checks [ "journaled step invariants hold" ]
-        negativeControlRequired
-    }
-]
 ```
 
 The CI gate should fail when:
@@ -657,6 +598,33 @@ The CI gate should fail when:
 - a required proof did not run
 - a required check did not pass
 - a claim requires negative controls and none failed as expected
+
+## Source Layout
+
+Recommended source layout:
+
+```text
+src/
+  Telemetry/
+    Trace.fs         # withSpan, annotate, event
+    Otel.fs          # Node OTel SDK setup for Fable entrypoints
+  Proofs/
+    Proof.fs         # proof CE and Proof<'result>
+    Property.fs      # property CE and PropertySpec<'result>
+    ProcessHost.fs   # processHost CE, readiness, lifecycle
+    S2Lite.fs        # s2 lite supervisor
+    Expect.fs        # workloadResult, predicate
+    TraceSql.fs      # chdb query interop
+    TraceExpect.fs   # spanExists and operation-history checks
+    Faults.fs        # fault controller
+    NegativeControls.fs
+    Reports.fs
+    Runner.fs        # selection, execution, summary, exit code
+    Registry.fs      # compiled list of proofs
+```
+
+Avoid a central `Harness.fs` abstraction. The proof runner is
+`Property + Runner + Trace verification`, not `Context + check`.
 
 ## Commands
 
@@ -677,8 +645,7 @@ dotnet fable eff-firegrid.fsproj --outDir build_proofs --noCache
 node build_proofs/src/Program.js proofs
 ```
 
-The CLI should parse arguments directly instead of relying only on environment
-variables:
+The CLI should parse arguments directly:
 
 ```text
 proofs list
@@ -686,45 +653,69 @@ proofs run [--proof <substring>] [--trial-id <id>] [--preserve]
 proofs replay <report.json>
 ```
 
-`npm run proofs` can continue to map to `proofs run`.
+`npm run proofs` can map to `proofs run`.
 
-## Milestone 1: Compiled Property Runner With Negative Controls
+## Milestone 0: Telemetry Foundation
 
-This is the first real milestone. It is not done until a proof can be expressed
-as a property with resources, workload, verification, deterministic faults, and
-negative controls.
+This milestone has started.
 
 Deliverables:
 
-1. `src/Proofs/Proof.fs`
-2. `src/Proofs/Property.fs`
-3. `src/Proofs/ProcessHost.fs`
-4. `src/Proofs/S2Lite.fs`
-5. `src/Proofs/Expect.fs`
-6. `src/Proofs/Evidence.fs`
-7. `src/Proofs/Faults.fs`
-8. `src/Proofs/NegativeControls.fs`
-9. `src/Proofs/Reports.fs`
-10. `src/Proofs/Runner.fs`
-11. `src/Proofs/Registry.fs`
-12. `src/Program.fs` CLI that runs `Runner`
+1. `src/Telemetry/Trace.fs`
+2. `src/Telemetry/Otel.fs`
+3. npm dependencies for `@opentelemetry/api`,
+   `@opentelemetry/sdk-node`, `@opentelemetry/exporter-trace-otlp-http`,
+   and `chdb`
+4. first production callsites in `SubjectHistory`
+
+Acceptance criteria:
+
+1. `dotnet build` succeeds with FS1182.
+2. Fable compilation succeeds.
+3. `SubjectHistory.tail`, `append`, `appendExpected`, and `foldTo` emit spans
+   when OTel is started.
+4. The tracing API remains usable from production code without a proof runner.
+
+## Milestone 1: Compiled Property Runner
+
+Deliverables:
+
+1. proof and property CEs
+2. compiled proof registry
+3. basic runner CLI
+4. S2 lite resource lifecycle
+5. workload result checks
+6. OTLP receiver/exporter writing `spans.jsonl`
+7. `TraceSql` backed by `chdb`
+8. `TraceExpect.spanExists`
 
 Acceptance criteria:
 
 1. Proofs are compiled into `eff-firegrid.fsproj`.
-2. `npm run proofs -- --proof store.object-serialization` starts S2 if needed,
-   runs the workload, runs verifiers, and exits non-zero on failure.
-3. At least one proof has a negative control that fails as expected.
-4. An unexpected negative-control pass fails the run.
-5. Failed proofs write a JSON report.
-6. `PRESERVE=1` or `--preserve` keeps resources after failure.
-7. No `.fsx` proof launcher exists.
+2. `npm run proofs -- --proof foundation.subject-history` starts the trace
+   store, runs the workload, runs verifiers, and exits non-zero on failure.
+3. At least one verifier queries spans through `chdb`.
+4. Failed proofs write a JSON report with trace store paths and replay command.
+5. No `.fsx` proof launcher exists.
 
-## Milestone 2: Effect Ledger Boundary Proofs
+## Milestone 2: Negative Controls And Faults
 
-The current effect-ledger proof should become the first adversarial proof,
-because it exposes the most important difference between "green" and
-"guaranteed."
+Deliverables:
+
+1. `FaultController`
+2. negative-control runner
+3. deterministic append failure hooks
+4. process kill/restart hooks
+5. expected-failure verification
+
+Acceptance criteria:
+
+1. At least one proof has a negative control that fails as expected.
+2. An unexpected negative-control pass fails the run.
+3. Fault plans are represented in spans and reports.
+4. Replay can reproduce the same fault plan.
+
+## Milestone 3: Effect Ledger Boundary Proofs
 
 Production surface:
 
@@ -743,48 +734,18 @@ Proof requirements:
 - deterministic fault plan fails or kills at each append boundary and asserts
   the invariant after recovery
 
-Acceptance criteria:
-
-1. The runner executes all append-boundary cases.
-2. Every boundary trial has a replay command.
-3. The known-bad mutation produces a red negative-control result.
-
-## Milestone 3: Fencing Proof With Fault Coverage
-
-The current fencing proof should prove the article's epoch mechanism and also
-prove that stale owners are rejected under deterministic fault schedules.
-
-Proof requirements:
-
-- newer fence token durably demotes the prior owner
-- prior owner receives `FencingTokenMismatch`
-- stale commit cannot change state after demotion
-- negative control removes or bypasses the fence check and fails as expected
-
-This is still not the same as a two-process live race. It proves the primitive.
-The live race lands in the next milestone.
-
 ## Milestone 4: First Object Serialization Proof
 
 Implement the closest F# equivalent of the fluent
 `store-object-serialization.ts` proof.
 
-Production surface:
-
-- a small durable actor/object surface in `src/Foundation` or the production
-  runtime module
-- a counter object/actor used by the proof
-- no proof-local fake runtime
-
 Proof:
 
-- `src/Proofs/StoreObjectSerializationProof.fs`
 - workload runs two concurrent same-key `add` calls
 - workload reads final value
 - verifier checks completed calls, max result, and final value
-
-This milestone proves that the property runner is useful before adding
-multi-process host complexity.
+- verifier checks relevant object and S2 spans through `TraceSql`
+- no proof-local fake runtime
 
 ## Milestone 5: Multiple Host Live-Fencing Proof
 
@@ -795,41 +756,36 @@ Runner additions:
 
 - `hosts [ processHost "a" { ... }; processHost "b" { ... } ]`
 - readiness probes
-- runner evidence for host start/ready/stop
+- runner spans for host start/ready/stop
 - fault controller with host kill/stop/restart
 
 Proof:
 
-- `src/Proofs/StoreObjectLiveFencingProof.fs`
 - starts S2 lite
 - starts host `a`
 - starts host `b`
 - begins a deposed request on host `a`
-- waits until S2 evidence shows the deposed call started
+- waits until trace evidence shows the deposed call started
 - sends takeover request to host `b`
 - verifies host `b` owns the final value
-- verifies runner evidence saw both hosts start
+- verifies spans show both hosts were ready and the stale owner was fenced
 
 ## Milestone 6: Operation History And Linearizability
 
-Add first-class operation evidence and a linearizability checker for concurrent
-proofs.
-
 Deliverables:
 
-- `OperationEvent`
+- operation span schema
 - operation wrapper for workload code
 - JSON report operation history
 - initial linearizability adapter API
 - counter sequential model
 - CI check for illegal histories
 
-Workload-result checks and runner evidence are useful smoke tests. Operation
-history plus a sequential model is the guarantee for concurrent object behavior.
+Workload-result checks and lifecycle spans are useful smoke tests. Operation
+history plus a sequential model is the guarantee for concurrent object
+behavior.
 
 ## Milestone 7: Generated Workloads And Claim Coverage
-
-Add seeded generation, shrinking, and claim coverage gates.
 
 Deliverables:
 
@@ -844,15 +800,16 @@ Deliverables:
 1. A proof is a compiled declaration of properties.
 2. A property has resources, workload, and verifiers.
 3. Host processes are resources owned by the runner.
-4. Proof code may drive production APIs, HTTP handlers, CLIs, or generated
+4. Production code emits domain evidence through `Trace.withSpan` and related
+   APIs.
+5. Proof code may drive production APIs, HTTP handlers, CLIs, or generated
    clients.
-5. Proof code must not define a fake production runtime to make verification
+6. Proof code must not define a fake production runtime to make verification
    easier.
-6. Runner evidence is canonical for host/S2 lifecycle.
-7. Operation history is canonical for linearizability.
-8. Negative controls are required for claims marked proven.
-9. Deterministic fault plans must be reportable and replayable.
-10. Traces are useful diagnostics and optional evidence, not the only ledger.
+7. OTel traces are the canonical proof evidence ledger.
+8. chDB SQL is the first query path for proof evidence.
+9. Negative controls are required for claims marked proven.
+10. Deterministic fault plans must be reportable and replayable.
 11. `section/check/expectEqual` are not the proof API.
 12. CE syntax must remain valid F#.
 13. The compiled-project enforcement must survive the migration from
@@ -879,16 +836,18 @@ let subjectHistory =
             property "foundation.subject-history-proof" {
                 s2LiveFromEnv
 
-                workload (fun ctx ->
-                    async {
-                        // create stream, append records, fold, return summary
-                    })
+                workload FoundationSubjectHistoryProof.run
 
                 verify [
                     Expect.workload "append and fold summary is valid" (fun result ->
                         result.TailAdvanced
                         && result.ConflictObserved
                         && result.FoldObservedPendingTimer)
+
+                    TraceExpect.spanExists
+                        "append expected span emitted"
+                        "subject_history.append_expected"
+                        [ "subject", result.Subject ]
                 ]
             })
     }

@@ -3,6 +3,88 @@ namespace Eff.Proofs
 open Eff.Foundation.Durable
 
 module DurableSemanticsProof =
+
+    // --- A deterministic environment + driver, used to state the replay laws. ---
+    // The driver resolves a blocked op to a fixed value and appends only the
+    // completion the replayer reads (ActivityCompleted / TimerFired /
+    // SignalReceived). A "crash" is just re-driving from a prefix of the history.
+
+    let private resolveEvents (opId: OpId) (need: Need) : Event list =
+        match need with
+        | NeedsActivity activity -> [ ActivityCompleted(opId, "done:" + activity.Name) ]
+        | NeedsEvent(Timer _) -> [ TimerFired opId ]
+        | NeedsEvent(Signal name) -> [ SignalReceived(opId, name, "sig:" + name) ]
+
+    /// Drive a program to completion from a starting history. Deterministic, so
+    /// re-driving from any prefix must reproduce the same result and history.
+    let private drive (start: History) (program: Durable<string>) : string * History =
+        let rec loop history =
+            match Durable.replay history program with
+            | Done value -> value, history
+            | Blocked(opId, need) -> loop (resolveEvents opId need |> List.fold (fun h e -> History.append e h) history)
+
+        loop start
+
+    // Representative program family the laws are checked against (enumerated, not
+    // random — Fable has no FsCheck; this is the in-Node law suite).
+    let private programs: (string * Durable<string>) list =
+        [ "single activity", Durable.perform { Name = "a"; Input = "1" }
+
+          "two activities chained",
+          Durable.perform { Name = "reserve"; Input = "x" }
+          |> Durable.bind (fun r -> Durable.perform { Name = "charge"; Input = r })
+          |> Durable.bind (fun c -> Durable.result ("done:" + c))
+
+          "activity, timer, activity",
+          Durable.perform { Name = "reserve"; Input = "x" }
+          |> Durable.bind (fun _ -> Durable.await (Timer 1000L))
+          |> Durable.bind (fun _ -> Durable.perform { Name = "ship"; Input = "y" })
+
+          "signal then activity",
+          Durable.await (Signal "approved")
+          |> Durable.bind (fun s -> Durable.perform { Name = "act"; Input = s })
+          |> Durable.bind (fun r -> Durable.result ("final:" + r)) ]
+
+    /// The replay-correctness theorem, decomposed into checks over one program.
+    let private checkLaws ctx (label: string) (program: Durable<string>) =
+        let result, full = drive History.empty program
+        let events = History.toList full
+
+        // L1 determinism — two clean drives agree on result and history.
+        let result2, full2 = drive History.empty program
+
+        Harness.check
+            ctx
+            (label + ": deterministic (two clean drives agree)")
+            (result2 = result && History.toList full2 = events)
+
+        // L2 effectively-once — replaying the full committed history finishes and
+        // never re-dispatches a completed op.
+        match Durable.replay full program with
+        | Done value -> Harness.expectEqual ctx (label + ": effectively-once on replay") result value
+        | other -> Harness.check ctx (sprintf "%s: expected Done on full replay, got %A" label other) false
+
+        // L3 at-least-once — dropping the last completion re-blocks at that op
+        // (a crash before the result was committed re-dispatches it).
+        match List.rev events with
+        | _ :: restRev ->
+            match Durable.replay (History.ofList (List.rev restRev)) program with
+            | Blocked _ -> Harness.check ctx (label + ": missing last completion re-blocks (at-least-once)") true
+            | Done _ -> Harness.check ctx (label + ": expected re-dispatch when last completion dropped") false
+        | [] -> ()
+
+        // L4 crash/replay equivalence — re-driving from EVERY prefix of the
+        // committed history reproduces the same result and the same final history.
+        let prefixes = [ for i in 0 .. List.length events -> events |> List.truncate i ]
+
+        let equivalent =
+            prefixes
+            |> List.forall (fun prefix ->
+                let r, h = drive (History.ofList prefix) program
+                r = result && History.toList h = events)
+
+        Harness.check ctx (label + ": crash/replay equivalence over all prefixes") equivalent
+
     let proof =
         Harness.proof "durable-semantics-tier1" (fun ctx ->
             async {
@@ -53,6 +135,12 @@ module DurableSemanticsProof =
                             | Done value -> Harness.expectEqual ctx "signal payload is replayed" "yes" value
                             | other -> Harness.check ctx (sprintf "expected signal replay, got %A" other) false
                         })
+
+                do!
+                    Harness.section
+                        ctx
+                        "replay laws (determinism, effectively-once, crash/resume)"
+                        (async { programs |> List.iter (fun (label, program) -> checkLaws ctx label program) })
 
                 do!
                     Harness.section

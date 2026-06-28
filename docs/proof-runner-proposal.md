@@ -676,13 +676,17 @@ Deliverables:
    `@opentelemetry/sdk-node`, `@opentelemetry/exporter-trace-otlp-http`,
    and `chdb`
 4. first trace-query building block in `src/Proofs/TraceSql.fs`
+5. compiled Fable smoke coverage that exercises `TraceSql` against a real
+   JSONEachRow span file
 
 Acceptance criteria:
 
 1. `dotnet build` succeeds with FS1182.
 2. Fable compilation succeeds.
-3. `TraceSql.spanExists` can query a JSONEachRow span file through `chdb`.
+3. `npm run check` proves `TraceSql.spanExists` can find and reject
+   proof-owned span rows through `chdb`.
 4. The tracing API remains usable without a proof runner.
+5. No proof/validation spans are emitted from production modules.
 
 ## Milestone 1: Compiled Property Runner
 

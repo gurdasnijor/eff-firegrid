@@ -14,15 +14,37 @@
 #load "../src/S2/Client.fs"
 #load "../src/S2/Cli.fs"
 #load "../src/S2/Patterns.fs"
+#load "../src/Proofs/TraceSql.fs"
 
 open Fable.Core
+open Fable.Core.JsInterop
 open Eff
+open Eff.Proofs
 
 [<Emit("process.exit($0)")>]
 let exit (code: int) : unit = jsNative
 
 [<Emit("Date.now()")>]
 let now () : float = jsNative
+
+let fs: obj = importAll "node:fs"
+let os: obj = importAll "node:os"
+let path: obj = importAll "node:path"
+
+[<Emit("$0.mkdtempSync($1)")>]
+let mkdtempSync (_fs: obj) (_prefix: string) : string = jsNative
+
+[<Emit("$0.tmpdir()")>]
+let tmpdir (_os: obj) : string = jsNative
+
+[<Emit("$0.join($1, $2)")>]
+let pathJoin (_path: obj) (_left: string) (_right: string) : string = jsNative
+
+[<Emit("$0.writeFileSync($1, $2, 'utf8')")>]
+let writeFileSync (_fs: obj) (_path: string) (_content: string) : unit = jsNative
+
+[<Emit("$0.rmSync($1, { recursive: true, force: true })")>]
+let rmSync (_fs: obj) (_path: string) : unit = jsNative
 
 // ---- tiny assertion harness ----
 let mutable passed = 0
@@ -63,6 +85,39 @@ let basinName = "test-basin-885234"
 
 let suite =
     async {
+        do!
+            test
+                "proof traces: chdb spanExists"
+                (async {
+                    let root = mkdtempSync fs (pathJoin path (tmpdir os) "eff-firegrid-proof-")
+                    let spansJsonl = pathJoin path root "spans.jsonl"
+
+                    try
+                        writeFileSync
+                            fs
+                            spansJsonl
+                            """{"trial_id":"trial-1","name":"proof.subject_history.append_expected","attributes":{"proof.subject":"subject-1","proof.expected.version":"0"}}
+"""
+
+                        let store: TraceSql.TraceStore =
+                            { TrialId = "trial-1"
+                              SpansJsonl = spansJsonl }
+
+                        let! found =
+                            TraceSql.spanExists "proof.subject_history.append_expected" [ "proof.subject", "subject-1" ]
+                            |> TraceSql.exists store
+
+                        check "spanExists finds proof-owned span" found
+
+                        let! missing =
+                            TraceSql.spanExists "proof.subject_history.append_expected" [ "proof.subject", "missing" ]
+                            |> TraceSql.exists store
+
+                        check "spanExists rejects missing span" (not missing)
+                    finally
+                        rmSync fs root
+                })
+
         let s2 = S2Cli.connect ()
         let basin = s2 |> S2.basin basinName
         let sname = uniq "fsharp-test"

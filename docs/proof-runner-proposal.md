@@ -664,25 +664,31 @@ proofs replay <report.json>
 
 `npm run proofs` can map to `proofs run`.
 
-## Milestone 0: Telemetry Foundation
+## Milestone 0: First Executable Trace-Backed Proof
 
-This milestone has started.
+Do not add telemetry or query modules as standalone scaffold. The first
+implementation slice should introduce them only with a proof that exercises
+them end-to-end.
 
 Deliverables:
 
-1. `src/Telemetry/Trace.fs`
-2. `src/Telemetry/Otel.fs`
-3. npm dependencies for `@opentelemetry/api`,
-   `@opentelemetry/sdk-node`, `@opentelemetry/exporter-trace-otlp-http`,
-   and `chdb`
-4. first trace-query building block in `src/Proofs/TraceSql.fs`
+1. `src/Telemetry/Trace.fs`, used by the proof adapter or runner in the same
+   PR.
+2. `src/Telemetry/Otel.fs`, used by the proof entrypoint or host process in
+   the same PR.
+3. `src/Proofs/TraceSql.fs`, used by at least one verifier in the same PR.
+4. npm dependencies for OpenTelemetry and `chdb`, added only when the above
+   modules are exercised.
+5. a compiled proof that emits at least one runner/proof-adapter span, exports
+   it, and verifies it through `TraceSql`.
 
 Acceptance criteria:
 
 1. `dotnet build` succeeds with FS1182.
 2. Fable compilation succeeds.
-3. `TraceSql.spanExists` can query a JSONEachRow span file through `chdb`.
-4. The tracing API remains usable without a proof runner.
+3. `npm run proofs -- --proof <name>` emits at least one proof-owned span.
+4. A verifier queries that span through `chdb`.
+5. Removing or renaming the emitted span makes the verifier fail.
 
 ## Milestone 1: Compiled Property Runner
 

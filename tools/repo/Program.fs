@@ -128,7 +128,8 @@ module Program =
             | Some name -> [ "PROOF", name ]
             | None -> []
 
-        runWithEnv "dotnet" [ "fable"; "scripts/proofs.fsx"; "--outDir"; "build_proofs"; "--runScript" ] env
+        run "dotnet" [ "fable"; "eff-firegrid.fsproj"; "--outDir"; "build_proofs"; "--noCache" ]
+        runWithEnv "node" [ "build_proofs/src/Program.js"; "proofs" ] env
 
     let test () =
         run "dotnet" [ "fable"; "tests/Suite.fsx"; "--outDir"; "build_test" ]

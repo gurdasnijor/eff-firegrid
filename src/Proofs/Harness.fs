@@ -5,13 +5,13 @@ open Fable.Core
 /// The generic, behavior-free proof harness. It is compiled into
 /// eff-firegrid.fsproj so `dotnet build`, FS1182, and fsharplint enforce that
 /// proofs stay in sync with the production APIs they exercise — drift is a
-/// build error, not a runtime surprise in a loose script.
+/// build error, not a runtime surprise in a loose proof launcher.
 ///
 /// It contains NO workflow / object / S2 behavior — only:
 ///   - section / check / expectEqual / note printing
 ///   - unique, readable, sortable resource-name generation
 ///   - a cleanup registry (skipped on failure when PRESERVE=1)
-///   - script config (the S2 basin name, overridable with S2_BASIN)
+///   - runner config (the S2 basin name, overridable with S2_BASIN)
 ///   - a runner that executes a registry of proofs, prints one combined
 ///     summary, and sets the process exit code
 ///
@@ -24,13 +24,13 @@ module Harness =
     let private nowMillis () : float = jsNative
 
     [<Emit("process.exit($0)")>]
-    let private processExit (code: int) : unit = jsNative
+    let private processExit (_code: int) : unit = jsNative
 
     [<Emit("(process.env[$0] != null ? process.env[$0] : '')")>]
-    let private envOr (name: string) : string = jsNative
+    let private envOr (_name: string) : string = jsNative
 
-    /// Script configuration sourced from the environment, with the same default
-    /// the scratchpads hard-coded. Override the basin with S2_BASIN=...
+    /// Runner configuration sourced from the environment. Override the basin
+    /// with S2_BASIN=...
     type Config = { Basin: string }
 
     let config: Config =
@@ -156,7 +156,14 @@ module Harness =
 
         async {
             if List.isEmpty selected then
-                printfn "no proofs matched filter: %s" (String.concat ", " filter)
+                let label =
+                    match filter with
+                    | [] -> "no registered proofs"
+                    | names -> sprintf "no proofs matched filter: %s" (String.concat ", " names)
+
+                ctx.Failed <- ctx.Failed + 1
+                ctx.Failures <- label :: ctx.Failures
+                printfn "%s" label
 
             for p in selected do
                 printfn "\n### %s" p.Name

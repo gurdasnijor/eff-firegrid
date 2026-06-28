@@ -132,8 +132,7 @@ formalize the same shape:
 
 ## Compiled Proof Suite
 
-Proofs are compiled F#, not loose scripts. The suite has three compiled pieces
-plus one thin launcher:
+Proofs are compiled F#, not loose scripts. The suite has four compiled pieces:
 
 ```text
 src/Proofs/
@@ -143,17 +142,22 @@ src/Proofs/
   SubjectHistoryProof.fs   # a proof: `let proof = Harness.proof "..." (fun ctx -> ...)`
   Registry.fs              # `let all = [ SubjectHistoryProof.proof; ... ]`
 
-scripts/proofs.fsx         # thin Fable launcher: #loads the compiled modules,
-                           # then `Harness.runProofs Registry.all`
+src/Program.fs             # compiled CLI entrypoint: `proofs`, `proofs list`
 ```
 
-All three `src/Proofs/*.fs` files are in `eff-firegrid.fsproj`, so they ride the
-existing JS-interop compile path that `src/S2/*` already uses: `dotnet build`
-type-checks them (with `--warnaserror:1182`), and `fsharplint` lints them. The
-proofs run under Fable/Node — the S2 client is JS interop — so `scripts/proofs.fsx`
-is a thin launcher that loads the same modules and runs the registry. The
-launcher carries no proof logic; if it did, that logic would escape the build's
-enforcement.
+All `src/Proofs/*.fs` files and `src/Program.fs` are in `eff-firegrid.fsproj`,
+so they ride the existing JS-interop compile path that `src/S2/*` already uses:
+`dotnet build` type-checks them (with `--warnaserror:1182`), and `fsharplint`
+lints them. The proofs run under Fable/Node because the S2 client is JS interop,
+but the runner is emitted from the compiled project:
+
+```sh
+dotnet fable eff-firegrid.fsproj --outDir build_proofs --noCache
+node build_proofs/src/Program.js proofs
+```
+
+There is no proof `.fsx` launcher. If proof logic is not in the project, the
+proof command cannot see it, and the build/lint gates cannot enforce it.
 
 Why this beats the REPL/script approach on the three axes that were painful:
 
@@ -199,9 +203,6 @@ src/
     StateViewProof.fs      # next, alongside StateView
     KvStoreProof.fs        # next, alongside KvStore
     Registry.fs            # exists — the one list of all proofs
-
-scripts/
-  proofs.fsx               # thin Fable launcher (no proof logic)
 ```
 
 Later-stage, as the suite grows and the harness needs to formalize (do not
@@ -903,11 +904,12 @@ npm run play                      # repl.fsx tour (unchanged)
 npm test                          # tests/Suite.fsx integration suite (unchanged)
 ```
 
-`npm run proofs` is wired through the repo build tool (`tools/repo/Program.fs`)
-and runs the thin launcher with the proven single-file Fable path:
+`npm run proofs` is wired through the repo build tool (`tools/repo/Program.fs`).
+It compiles the normal project and then runs the emitted proof CLI:
 
 ```sh
-dotnet fable scripts/proofs.fsx --outDir build_proofs --runScript
+dotnet fable eff-firegrid.fsproj --outDir build_proofs --noCache
+node build_proofs/src/Program.js proofs
 # PROOF / PRESERVE / S2_BASIN are read from the environment
 ```
 
@@ -937,8 +939,9 @@ Deliverables:
    conflict classification, and cursor/fold behavior against real S2, driving
    the production `SubjectHistory` surface.
 3. ✅ `src/Proofs/Registry.fs` — the single list of proofs.
-4. ✅ `scripts/proofs.fsx` — thin Fable launcher; `npm run proofs` (with
-   `PROOF` / `PRESERVE` / `S2_BASIN`) wired through the repo build tool.
+4. ✅ `src/Program.fs` — compiled proof CLI entrypoint; `npm run proofs` (with
+   `PROOF` / `PRESERVE` / `S2_BASIN`) compiles the project and runs the emitted
+   `build_proofs/src/Program.js proofs`.
 5. ✅ `npm run proofs` added to `npm run check`, so `dotnet build` (type-check
    + FS1182), `fsharplint`, and the live-S2 run are all CI-gated.
 
@@ -1023,8 +1026,8 @@ The first milestone settled the harness-shaped questions:
 
 1. **Compiled, not scripted.** Proofs live in `src/Proofs/*.fs`, compiled into
    `eff-firegrid.fsproj`, so the build and linter enforce them. A proof is a
-   `Name + (Context -> Async<unit>)` value; `scripts/proofs.fsx` is only a
-   launcher.
+   `Name + (Context -> Async<unit>)` value; `src/Program.fs` is the compiled
+   CLI entrypoint that runs the registry.
 2. **Smallest harness.** `section` / `check` / `expectEqual` / `note`, `uniq`,
    a cleanup registry, `config` (the basin), and `runProofs`. Nothing workflow-
    or S2-specific lives in it.

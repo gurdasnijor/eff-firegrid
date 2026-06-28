@@ -154,7 +154,8 @@ module SubjectHistoryProof =
                                     ctx
                                     "conflict exposes winning record"
                                     (match details.Conflicting with
-                                     | SubjectHistory.ConflictRecord.Found record -> record.Body = Started "invoice-123"
+                                     | SubjectHistory.ConflictRecord.Found record ->
+                                         record.Body = Started "invoice-123"
                                      | _ -> false)
                             | other -> Harness.check ctx (sprintf "unexpected conflict outcome: %A" other) false
                         })
@@ -175,7 +176,11 @@ module SubjectHistoryProof =
                                       StepCompleted("reserve", "reservation-777")
                                       TimerRequested("timeout", "2026-06-28T00:00:00Z") ]
 
-                            Harness.expectEqual ctx "owner-style append advanced by 3" (SubjectHistory.Version 4L) after
+                            Harness.expectEqual
+                                ctx
+                                "owner-style append advanced by 3"
+                                (SubjectHistory.Version 4L)
+                                after
 
                             let! snapshot, applied =
                                 SubjectHistory.foldTo

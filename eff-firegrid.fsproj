@@ -9,12 +9,15 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Include="src/Telemetry/Trace.fs" />
+    <Compile Include="src/Telemetry/Otel.fs" />
     <Compile Include="src/S2/Interop.fs" />
     <Compile Include="src/S2/Errors.fs" />
     <Compile Include="src/S2/Client.fs" />
     <Compile Include="src/S2/Cli.fs" />
     <Compile Include="src/S2/Patterns.fs" />
     <Compile Include="src/Foundation/SubjectHistory.fs" />
+    <Compile Include="src/Proofs/TraceSql.fs" />
     <Compile Include="src/Program.fs" />
   </ItemGroup>
 

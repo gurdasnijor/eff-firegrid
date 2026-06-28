@@ -15,6 +15,7 @@
     <Compile Include="src/S2/Cli.fs" />
     <Compile Include="src/S2/Patterns.fs" />
     <Compile Include="src/Foundation/SubjectHistory.fs" />
+    <Compile Include="src/Foundation/WorkHistory.fs" />
     <Compile Include="src/Proofs/Harness.fs" />
     <Compile Include="src/Proofs/SubjectHistoryProof.fs" />
     <Compile Include="src/Proofs/Registry.fs" />

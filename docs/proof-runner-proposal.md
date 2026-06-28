@@ -139,17 +139,25 @@ src/Proofs/
   Harness.fs               # generic, behavior-free: Context, Proof, section,
                            # check/expectEqual/note, uniq, cleanup registry,
                            # S2 config, runProofs (the runner)
-  SubjectHistoryProof.fs   # a proof: `let proof = Harness.proof "..." (fun ctx -> ...)`
+  SubjectHistoryProof.fs   # a proof over Foundation.SubjectHistory/WorkHistory
   Registry.fs              # `let all = [ SubjectHistoryProof.proof; ... ]`
 
 src/Program.fs             # compiled CLI entrypoint: `proofs`, `proofs list`
 ```
 
-All `src/Proofs/*.fs` files and `src/Program.fs` are in `eff-firegrid.fsproj`,
-so they ride the existing JS-interop compile path that `src/S2/*` already uses:
-`dotnet build` type-checks them (with `--warnaserror:1182`), and `fsharplint`
-lints them. The proofs run under Fable/Node because the S2 client is JS interop,
-but the runner is emitted from the compiled project:
+The code being validated lives outside the proof modules. For example,
+`src/Foundation/SubjectHistory.fs` contains the generic append/read/fold
+primitive and `src/Foundation/WorkHistory.fs` contains the concrete durable-work
+record, codec, fold, and wrapper operations used by the first proof. The proof
+module creates isolated S2 resources, drives those foundation APIs, and checks
+the observed behavior; it does not define the domain surface it is proving.
+
+All foundation and proof files plus `src/Program.fs` are in
+`eff-firegrid.fsproj`, so they ride the existing JS-interop compile path that
+`src/S2/*` already uses: `dotnet build` type-checks them (with
+`--warnaserror:1182`), and `fsharplint` lints them. The proofs run under
+Fable/Node because the S2 client is JS interop, but the runner is emitted from
+the compiled project:
 
 ```sh
 dotnet fable eff-firegrid.fsproj --outDir build_proofs --noCache
@@ -194,6 +202,7 @@ Near-term (exists now or next):
 src/
   Foundation/
     SubjectHistory.fs      # exists
+    WorkHistory.fs         # exists — concrete record/codec/fold over SubjectHistory
     StateView.fs           # next, to its SDD signature
     KvStore.fs             # next, to its SDD signature
 
@@ -935,14 +944,16 @@ Deliverables:
 1. ✅ `src/Proofs/Harness.fs` — generic `section` / `check` / `expectEqual` /
    `note`, `uniq`, cleanup registry, `config`, and `runProofs`. Compiled into
    `eff-firegrid.fsproj`.
-2. ✅ `src/Proofs/SubjectHistoryProof.fs` — proves expected-sequence append,
-   conflict classification, and cursor/fold behavior against real S2, driving
-   the production `SubjectHistory` surface.
-3. ✅ `src/Proofs/Registry.fs` — the single list of proofs.
-4. ✅ `src/Program.fs` — compiled proof CLI entrypoint; `npm run proofs` (with
+2. ✅ `src/Foundation/WorkHistory.fs` — concrete durable-work record, codec,
+   fold, and append/fold wrappers over `SubjectHistory`.
+3. ✅ `src/Proofs/SubjectHistoryProof.fs` — proves expected-sequence append,
+   conflict classification, and cursor/fold behavior against real S2 by driving
+   the foundation surfaces rather than defining the domain under proof inline.
+4. ✅ `src/Proofs/Registry.fs` — the single list of proofs.
+5. ✅ `src/Program.fs` — compiled proof CLI entrypoint; `npm run proofs` (with
    `PROOF` / `PRESERVE` / `S2_BASIN`) compiles the project and runs the emitted
    `build_proofs/src/Program.js proofs`.
-5. ✅ `npm run proofs` added to `npm run check`, so `dotnet build` (type-check
+6. ✅ `npm run proofs` added to `npm run check`, so `dotnet build` (type-check
    + FS1182), `fsharplint`, and the live-S2 run are all CI-gated.
 
 This milestone intentionally avoids the full proof runner, process-host

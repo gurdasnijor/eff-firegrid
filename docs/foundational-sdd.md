@@ -413,6 +413,7 @@ strong get   = checkTail + wait for StateView catch-up
 src/
   Foundation/
     SubjectHistory.fs
+    WorkHistory.fs
     StateView.fs
     KvStore.fs
 
@@ -428,7 +429,8 @@ src/
 Each layer starts as production code plus a compiled validation proof. No layer
 starts as a proof-local scratchpad.
 
-1. Write `src/Foundation/SubjectHistory.fs` and
+1. Write `src/Foundation/SubjectHistory.fs`, the concrete
+   `src/Foundation/WorkHistory.fs` validation surface, and
    `src/Proofs/SubjectHistoryProof.fs`.
 2. Write `src/Foundation/StateView.fs` and `src/Proofs/StateViewProof.fs`.
 3. Write `src/Foundation/KvStore.fs` and `src/Proofs/KvStoreProof.fs`.

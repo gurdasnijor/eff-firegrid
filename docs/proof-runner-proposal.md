@@ -6,9 +6,9 @@ Proposed, with Milestone 0 implementation started.
 
 This SDD replaces the earlier custom in-memory evidence model. The proof
 runner should use the same observability substrate the production system needs:
-OpenTelemetry spans emitted from instrumented production code, runner lifecycle
-code, and host processes. Proof verification queries those traces through
-`chdb`, the npm package for `chdb-io/chdb-node`.
+OpenTelemetry spans emitted from runner lifecycle code, proof adapters, host
+processes, and product-owned instrumentation. Proof verification queries those
+traces through `chdb`, the npm package for `chdb-io/chdb-node`.
 
 The proof runner is validation infrastructure. It is not a rapid iteration
 REPL, not a `.fsx` launcher, and not a proof-local fake runtime.
@@ -32,8 +32,8 @@ expressions are the right shape for declaration. Workloads stay ordinary
 
 1. Keep proofs compiled into `eff-firegrid.fsproj`, so `dotnet build`, FS1182,
    and `fsharplint` catch drift from production APIs.
-2. Make production instrumentation look like Effect's `withSpan`: local,
-   explicit, and close to the code being proven.
+2. Make instrumentation look like Effect's `withSpan`: local, explicit, and
+   usable from production, runner, or proof-adapter code.
 3. Use OpenTelemetry traces as the canonical evidence ledger for proofs and
    baseline observability.
 4. Query proof evidence with `chdb` instead of introducing a second custom
@@ -65,9 +65,9 @@ expressions are the right shape for declaration. Workloads stay ordinary
 
 The system has four layers:
 
-1. **Production instrumentation** in `src/Telemetry` and production modules.
-   Code under test emits spans directly with `Trace.withSpan`,
-   `Trace.annotate`, and `Trace.event`.
+1. **Telemetry primitives** in `src/Telemetry`. `Trace.withSpan`,
+   `Trace.annotate`, and `Trace.event` are available to production code,
+   runner code, and proof adapters.
 2. **Runtime OTel setup** in `Eff.Telemetry.Otel`. Node/Fable entrypoints call
    `Otel.startFromEnv` once at process start and `Otel.shutdown` at process
    exit.
@@ -81,7 +81,7 @@ There is one evidence path:
 
 ```text
 compiled proof/workload/host
-  -> production Trace.withSpan callsites
+  -> runner/proof-adapter spans plus product-owned spans
   -> OpenTelemetry spans
   -> runner-owned OTLP receiver/export file
   -> chdb SQL verification
@@ -91,7 +91,7 @@ compiled proof/workload/host
 The runner may keep a small in-memory summary of resources for convenience, but
 verification evidence should come from the trace store whenever possible.
 
-## Production Instrumentation API
+## Instrumentation API
 
 Milestone 0 starts with a small Fable-friendly API:
 
@@ -111,31 +111,40 @@ module Trace =
     val event: name: string -> attributes: Attribute list -> Async<unit>
 ```
 
-Callsites should be inside the actual modules being proven:
+Proof-owned evidence must not be added to production modules. If a proof needs
+a span that exists only to validate the proof, emit it from the runner, host
+adapter, or proof workload wrapper.
+
+Product modules may use the same API only for baseline observability that would
+still be useful without the proof runner. Those span names and attributes must
+describe product behavior, not proof checks.
+
+Proof-adapter shape:
 
 ```fsharp
-let appendExpected basin codec subject expected records =
-    async {
-        let! appended = ...
-
-        match appended with
-        | Ok ack ->
-            do! Trace.annotate [ "subject_history.append.status", "ok" ]
-            return Ok ack
-        | Error(S2Errors.SeqNumMismatch actual) ->
-            do! Trace.annotate [ "subject_history.append.status", "conflict" ]
-            ...
-    }
+let appendExpectedWithEvidence basin codec subject expected records =
+    SubjectHistory.appendExpected basin codec subject expected records
     |> Trace.withSpan
-        "subject_history.append_expected"
-        [ "subject", streamName subject
-          "expected.version", string expected
-          "record.count", string records.Length ]
+        "proof.subject_history.append_expected"
+        [ "proof.subject", subject
+          "proof.expected.version", string expected
+          "proof.record.count", string records.Length ]
 ```
 
-This is the intended ergonomic model: the proof runner does not infer important
-domain evidence from logs or wrappers. The production code emits the evidence
-that matters for the claim.
+Product-observability shape, only when the product wants this span regardless
+of proofs:
+
+```fsharp
+let appendCommand basin command =
+    runAppend command
+    |> Trace.withSpan
+        "eff.command.append"
+        [ "eff.stream", command.Stream
+          "eff.record.count", string command.Records.Length ]
+```
+
+This keeps validation vocabulary out of production code while still allowing
+proofs to query OTel traces as their evidence ledger.
 
 ## Runtime OTel Setup
 
@@ -666,15 +675,14 @@ Deliverables:
 3. npm dependencies for `@opentelemetry/api`,
    `@opentelemetry/sdk-node`, `@opentelemetry/exporter-trace-otlp-http`,
    and `chdb`
-4. first production callsites in `SubjectHistory`
+4. first trace-query building block in `src/Proofs/TraceSql.fs`
 
 Acceptance criteria:
 
 1. `dotnet build` succeeds with FS1182.
 2. Fable compilation succeeds.
-3. `SubjectHistory.tail`, `append`, `appendExpected`, and `foldTo` emit spans
-   when OTel is started.
-4. The tracing API remains usable from production code without a proof runner.
+3. `TraceSql.spanExists` can query a JSONEachRow span file through `chdb`.
+4. The tracing API remains usable without a proof runner.
 
 ## Milestone 1: Compiled Property Runner
 
@@ -800,19 +808,21 @@ Deliverables:
 1. A proof is a compiled declaration of properties.
 2. A property has resources, workload, and verifiers.
 3. Host processes are resources owned by the runner.
-4. Production code emits domain evidence through `Trace.withSpan` and related
-   APIs.
-5. Proof code may drive production APIs, HTTP handlers, CLIs, or generated
+4. Proof-owned evidence is emitted by runner/proof-adapter code, not production
+   modules.
+5. Production code may use `Trace.withSpan` only for product-owned
+   observability that is useful without proofs.
+6. Proof code may drive production APIs, HTTP handlers, CLIs, or generated
    clients.
-6. Proof code must not define a fake production runtime to make verification
+7. Proof code must not define a fake production runtime to make verification
    easier.
-7. OTel traces are the canonical proof evidence ledger.
-8. chDB SQL is the first query path for proof evidence.
-9. Negative controls are required for claims marked proven.
-10. Deterministic fault plans must be reportable and replayable.
-11. `section/check/expectEqual` are not the proof API.
-12. CE syntax must remain valid F#.
-13. The compiled-project enforcement must survive the migration from
+8. OTel traces are the canonical proof evidence ledger.
+9. chDB SQL is the first query path for proof evidence.
+10. Negative controls are required for claims marked proven.
+11. Deterministic fault plans must be reportable and replayable.
+12. `section/check/expectEqual` are not the proof API.
+13. CE syntax must remain valid F#.
+14. The compiled-project enforcement must survive the migration from
     `Harness.fs` to `Runner.fs`.
 
 ## Migration From Current Harness
@@ -845,9 +855,9 @@ let subjectHistory =
                         && result.FoldObservedPendingTimer)
 
                     TraceExpect.spanExists
-                        "append expected span emitted"
-                        "subject_history.append_expected"
-                        [ "subject", result.Subject ]
+                        "proof append expected span emitted"
+                        "proof.subject_history.append_expected"
+                        [ "proof.subject", result.Subject ]
                 ]
             })
     }

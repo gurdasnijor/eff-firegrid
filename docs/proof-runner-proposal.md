@@ -1,339 +1,380 @@
-# Eff Firegrid Verification Proposal
+# Eff Firegrid Proof Runner Proposal
 
 ## Status
 
-Proposed. The verification surface is a **compiled, enforced proof suite**, not
-a REPL/script workflow. First slice landed: the harness and the first
-foundation proof are compiled modules under `src/Proofs/`, included in
-`eff-firegrid.fsproj`, so `dotnet build`, FS1182, and `fsharplint` enforce that
-proofs stay in sync with the production APIs they exercise. `npm run proofs`
-runs the suite; it is part of `npm run check` / CI. See
-[Compiled Proof Suite](#compiled-proof-suite).
+Proposed revision.
 
-This is a deliberate reversal of the earlier REPL-first framing: the
-script-first promotion ladder was hard to systematize, enforce, and automate.
-A loose `.fsx` only fails at runtime, is not type-checked by the build, and is
-not linted. Moving proofs into the compiled project makes API drift a build
-error and makes the suite a first-class, CI-gated artifact.
+The previous draft mixed two different ideas:
 
-## Context
+1. A small compiled assertion harness with `section`, `check`, and
+   `expectEqual`.
+2. A property runner like `fluent-firegrid/apps/proofs`, where a proof declares
+   resources, runs a workload, captures evidence, and verifies the result after
+   the run.
 
-`eff-firegrid` is a Fable/F# system that wraps and composes the S2 JavaScript
-SDK into F#-native APIs. The verification surface is a compiled proof suite that
-exercises production modules directly:
+Only the second shape is the target. The first shape is useful as a temporary
+test helper, but it is not enough proof infrastructure. It does not model
+resources, hosts, workload results, operation histories, domain events, trial
+identity, reports, or replayable counterexamples.
 
-- `src/Proofs/` holds the proof harness and the proofs as compiled modules,
-  type-checked against the production surfaces they drive.
-- `repl.fsx` remains the live S2 playground and ergonomics probe (exploration,
-  not verification).
-- `tests/Suite.fsx` remains the S2 client integration suite.
-- `docs/foundational-sdd.md` defines the immediate path: prove the smallest
-  useful durable-work kernel one property at a time.
+The proof runner should be a compiled F# system with ergonomic computation
+expressions. Proof definitions remain compiled into `eff-firegrid.fsproj`, so
+`dotnet build`, FS1182, and `fsharplint` enforce that they stay aligned with
+production APIs.
 
-The next step is not a full deterministic simulator. The next step is to grow
-the proof suite top-down from the surfaces the SDD already specifies — write the
-production primitive to its SDD signature, then a compiled proof that drives it
-against real S2 — so each durable layer ships with an enforced proof rather than
-a scratchpad that someone has to remember to run.
+## Prior Art
 
-The later goal is an ergonomic proof/scenario runner for distributed behavior
-in `eff-firegrid`:
+The target shape is aligned with `fluent-firegrid/apps/proofs`, especially:
 
-- workflow run lifecycle
-- durable timers and signals
-- object ownership and serialization
-- stale owner fencing
-- host crash and restart
-- schedule materialization and sweeper races
-- exactly-once durable side effects
-- linearizability of externally observed operations
+- `proof(...).describedAs(...).spec(...)`
+- `property(...).s2Lite(...).hosts(...).workload(...).verify(...)`
+- `processHost(...)` resources with readiness probes
+- workload result checks plus evidence checks
 
-This design is inspired by:
+The F# implementation should not copy TypeScript APIs literally, but the
+semantic phases should match:
 
-- S2 deterministic simulation testing: https://s2.dev/blog/dst
-- Porcupine linearizability checking: https://github.com/anishathalye/porcupine
-- The existing TypeScript proof runner in `fluent-firegrid/apps/proofs`
-
-The TypeScript runner is useful later-stage prior art, but it should not be
-copied literally. For `eff-firegrid`, verification should grow in this order:
-
-1. A compiled, behavior-free harness (`src/Proofs/Harness.fs`) that the build
-   and linter enforce.
-2. Production primitives in `src/Foundation`, written to their SDD signatures.
-3. Compiled proofs in `src/Proofs` that drive those primitives against real S2,
-   registered once in `src/Proofs/Registry.fs`.
-4. Structured evidence (operation histories, domain events) added to the
-   harness when concurrency proofs need it.
-5. A full proof runner and deterministic simulation grown from the same harness
-   once the suite is broad enough to justify it.
+1. Define a proof and description.
+2. Provision resources such as `s2 lite` and one or more host processes.
+3. Run a workload against production APIs, HTTP handlers, or generated clients.
+4. Capture workload results and runner evidence.
+5. Verify the result and evidence after the workload completes.
+6. Tear resources down, or preserve them on failure when requested.
 
 ## Goals
 
-1. Make verification a compiled, enforced suite: proofs are type-checked by the
-   build and linter and gated in CI, so API drift is a build error.
-2. Exercise real `eff-firegrid` production modules, CLIs, and clients directly.
-3. Prefer one durable property per proof section.
-4. Build production primitives to their SDD signatures, then prove them.
-5. Make authoritative records and derived folds easy to print and inspect.
-6. Run the whole suite, or one proof by name, from a single command.
-7. Preserve a path toward operation histories and replayable counterexamples.
-8. Keep the harness generic and behavior-free so it can grow into a runner.
-9. Create a clean path toward seed-based deterministic simulation and
-   Porcupine-style linearizability checking.
+1. Keep proofs compiled and enforced by the normal project build.
+2. Make proof authoring feel like normal F# async code.
+3. Support multiple live host processes as first-class property resources.
+4. Separate resource setup, workload execution, and verification.
+5. Make workload result verification explicit.
+6. Capture runner evidence for hosts, S2, operations, and later domain events.
+7. Keep production behavior under test in `src/Foundation` and later production
+   modules, not in proof-local substitutes.
+8. Keep deterministic simulation as a later mode, not the first implementation.
 
 ## Non-Goals
 
-1. Do not build the full proof runner (resources/hosts/faults/reports DSL) in
-   the first iterations. Grow it from the compiled harness as the suite needs.
-2. Do not build a full deterministic simulator in the first iteration.
-3. Do not make SQL over traces the primary way to express application
-   correctness.
-4. Do not require every proof to use a linearizability checker.
-5. Do not hide system behavior behind proof-local substitutes for the real
-   runtime.
-6. Do not couple proof definitions to S2 client operations only. S2 is the
-   substrate, not the application-level behavior being proved.
-7. Do not add repository-specific proof drivers, adapters, or fixture APIs that
-   can fake workflow/object behavior. Proofs must exercise production exports,
-   CLIs, HTTP handlers, and generated clients directly.
+1. Do not use `.fsx` proof launchers.
+2. Do not center the API on `section/check/expectEqual`.
+3. Do not require a full linearizability checker for the first proof.
+4. Do not make raw traces the only canonical evidence format.
+5. Do not create verification-only workflow/object facades that hide production
+   behavior.
+6. Do not start with a large pseudo-language that is not valid F#.
 
-## Core Idea
+## Target Authoring Shape
 
-Verification is a compiled proof suite over production modules — enforced by the
-build, not a disciplined-but-optional REPL habit.
+Use computation expressions, but keep them shallow. A proof is a compiled F#
+value. A property is a compiled F# value. The workload is ordinary
+`Async<'result>`.
 
-Each proof is a value (`Harness.Proof`) registered once in
-`src/Proofs/Registry.fs`. Its body should:
+The preferred shape is a valid F# expression, not a sketch language:
 
-1. State the durable property being proved.
-2. Create isolated durable resources with readable names.
-3. Drive production modules directly.
-4. Print authoritative records and derived folds.
-5. Check the property with simple assertions.
-6. Register cleanup; the runner tears resources down (unless `PRESERVE=1`
-   intentionally keeps a counterexample).
+```fsharp
+let storeObjectSerialization =
+    proof "store.object-serialization" {
+        describedAs
+            "Concurrent same-key actor calls serialize through the S2-backed actor log and do not lose writes."
 
-Because proofs are compiled into `eff-firegrid.fsproj`, `dotnet build` and
-`fsharplint` check every proof against the real production signatures it calls.
-A renamed field or changed return type breaks the build, not a script someone
-runs by hand three weeks later.
+        property (
+            property "store.object-serialization-proof" {
+                s2Lite LocalRoot
 
-The immediate unit is a registered proof. A fuller proof runner can later
-formalize the same shape:
+                workload (fun ctx ->
+                    async {
+                        let counter =
+                            Counter.create {
+                                Basin = ctx.S2.Basin
+                                Namespace = "object-serialization-" + ctx.TrialId
+                                Name = "counter"
+                                Key = "counter-1"
+                            }
 
-1. **Resources**: scoped dependencies such as S2 streams and production host
-   processes.
-2. **Scenario**: actors and clients drive the system with ordinary F# async
-   programs.
-3. **Evidence**: authoritative records, folds, operation histories, and domain
-   events are captured.
-4. **Verification**: check workload results, histories, invariants, SQL views,
-   and optional linearizability models.
+                        let! results =
+                            Async.Parallel
+                                [ counter.Add 5
+                                  counter.Add 7 ]
 
-## Compiled Proof Suite
+                        let! value = counter.Value()
 
-Proofs are compiled F#, not loose scripts. The suite has four compiled pieces:
+                        return
+                            {| CompletedCalls = results.Length
+                               MaxResult = Array.max results
+                               Value = value |}
+                    })
 
-```text
-src/Proofs/
-  Harness.fs               # generic, behavior-free: Context, Proof, section,
-                           # check/expectEqual/note, uniq, cleanup registry,
-                           # S2 config, runProofs (the runner)
-  SubjectHistoryProof.fs   # a proof over Foundation.SubjectHistory/WorkHistory
-  Registry.fs              # `let all = [ SubjectHistoryProof.proof; ... ]`
-
-src/Program.fs             # compiled CLI entrypoint: `proofs`, `proofs list`
+                verify [
+                    Expect.workloadResult
+                        {| CompletedCalls = 2
+                           MaxResult = 12
+                           Value = 12 |}
+                ]
+            })
+    }
 ```
 
-The code being validated lives outside the proof modules. For example,
-`src/Foundation/SubjectHistory.fs` contains the generic append/read/fold
-primitive and `src/Foundation/WorkHistory.fs` contains the concrete durable-work
-record, codec, fold, and wrapper operations used by the first proof. The proof
-module creates isolated S2 resources, drives those foundation APIs, and checks
-the observed behavior; it does not define the domain surface it is proving.
+This is intentionally close to the TypeScript proof:
 
-All foundation and proof files plus `src/Program.fs` are in
-`eff-firegrid.fsproj`, so they ride the existing JS-interop compile path that
-`src/S2/*` already uses: `dotnet build` type-checks them (with
-`--warnaserror:1182`), and `fsharplint` lints them. The proofs run under
-Fable/Node because the S2 client is JS interop, but the runner is emitted from
-the compiled project:
-
-```sh
-dotnet fable eff-firegrid.fsproj --outDir build_proofs --noCache
-node build_proofs/src/Program.js proofs
+```ts
+proof("store.object-serialization")
+  .describedAs(...)
+  .spec(({ property, trialId }) =>
+    property("store.object-serialization-proof")
+      .s2Lite(...)
+      .workload(...)
+      .verify([...])
+  )
 ```
 
-There is no proof `.fsx` launcher. If proof logic is not in the project, the
-proof command cannot see it, and the build/lint gates cannot enforce it.
+## Multiple Host Processes
 
-Why this beats the REPL/script approach on the three axes that were painful:
+Multiple host processes should be property resources. The runner starts them,
+injects standard environment, waits for readiness, records evidence, and tears
+them down.
 
-1. **Systematize.** A proof is a `Harness.Proof` value registered once. Adding
-   one is a one-line edit to `Registry.fs`. There is no per-proof `npm` target,
-   no `#load` ordering to hand-maintain, no copy-pasted `uniq`/`check`/`section`.
-2. **Enforce.** Because proofs are compiled against the real production
-   modules, a renamed field or changed signature is a `dotnet build` failure.
-   A loose `.fsx` would only fail when someone remembered to run it.
-3. **Automate.** `npm run proofs` runs the whole suite (or `PROOF=<substring>`
-   for one) and exits non-zero on failure. It is wired into `npm run check`,
-   so CI runs it alongside `build`, `lint`, and `test`.
+Authoring shape:
 
-Harness conventions:
+```fsharp
+let objectLiveFencing =
+    proof "store.object-live-fencing" {
+        describedAs
+            "A live deposed object owner cannot append stale state after another host takes over."
 
-- **Cleanup is registered, not inlined.** `Harness.onCleanup` records a teardown
-  thunk next to the resource it frees; the runner runs them last-in-first-out.
-- **Counterexample preservation is a flag.** Cleanup runs by default; with
-  `PRESERVE=1`, a proof that fails keeps its resources and the runner prints
-  what it left behind.
-- **Config is environment-driven.** The basin defaults to `test-basin-885234`
-  and is overridable with `S2_BASIN`.
+        property (
+            property "store.object-live-fencing-proof" {
+                s2Lite LocalRoot
 
-The harness must stay generic: no workflow/object behavior, hidden stores, fake
-clients, event mappers, or alternate interpreters. `repl.fsx` (playground) and
-`tests/Suite.fsx` (S2 client integration suite) keep their own small scaffolds;
-they are not proofs and are intentionally left as-is.
+                hosts [
+                    processHost "a" {
+                        command "pnpm"
+                        args [ "exec"; "tsx"; workerPath ]
+                        env "HOST_PORT" (string portA)
+                        readinessUrl (hostA + "/ready")
+                        readinessAttempts 400
+                        readinessIntervalMs 50
+                    }
 
-## Recommended Repo Shape
+                    processHost "b" {
+                        command "pnpm"
+                        args [ "exec"; "tsx"; workerPath ]
+                        env "HOST_PORT" (string portB)
+                        readinessUrl (hostB + "/ready")
+                        readinessAttempts 400
+                        readinessIntervalMs 50
+                    }
+                ]
 
-Near-term (exists now or next):
+                workload (fun ctx ->
+                    async {
+                        let hostA = ctx.Hosts["a"].Endpoint
+                        let hostB = ctx.Hosts["b"].Endpoint
+                        let s2Endpoint = ctx.S2.Endpoint
+
+                        let namespaceName =
+                            "object-live-fencing-" + ctx.TrialId
+
+                        let streamName =
+                            ObjectRuntime.invocationStreamName namespaceName "counter-1" "cross-host-counter"
+
+                        let! deposedRequest =
+                            Http.post (hostA + "/deposed-add?by=5")
+                            |> Async.StartChild
+
+                        let! startedCount =
+                            ObjectRuntime.waitForStartedCount s2Endpoint streamName 2
+
+                        do! Http.post (hostB + "/now?value=3000")
+
+                        let! takeover =
+                            Http.postJson<{| HostId: string; Value: int |}> (hostB + "/add?by=7")
+
+                        do! Async.Sleep 1000
+                        do! deposedRequest |> Async.Ignore
+
+                        let! loaded =
+                            Http.getJson<{| HostId: string; Value: int |}> (hostB + "/value")
+
+                        return
+                            {| DeposedStartedEvents = startedCount
+                               LateOwnerDidNotChangeValue = loaded.Value = takeover.Value
+                               TakeoverHostId = takeover.HostId |}
+                    })
+
+                verify [
+                    Expect.workloadResult
+                        {| DeposedStartedEvents = 2
+                           LateOwnerDidNotChangeValue = true
+                           TakeoverHostId = "b" |}
+
+                    Evidence.hostStarted "a"
+                    Evidence.hostStarted "b"
+                    Evidence.s2LiteStarted
+                ]
+            })
+    }
+```
+
+The important part is ownership: proof definitions describe host specs; the
+runner owns actual process lifecycle.
+
+## Core Types
+
+Initial types should be small and direct.
+
+```fsharp
+type Proof<'result> =
+    { Name: string
+      Description: string option
+      Properties: PropertySpec<'result> list }
+
+type PropertySpec<'result> =
+    { Name: string
+      S2Lite: S2LiteSpec option
+      Hosts: HostSpec list
+      Workload: WorkloadContext -> Async<'result>
+      Verifiers: Check<'result> list }
+
+type S2LitePersistence =
+    | LocalRoot
+
+type S2LiteSpec =
+    { Persistence: S2LitePersistence }
+
+type Readiness =
+    { Url: string
+      Attempts: int
+      IntervalMs: int }
+
+type HostSpec =
+    { Name: string
+      Command: string
+      Args: string list
+      Env: Map<string, string>
+      Readiness: Readiness option }
+
+type RunningS2 =
+    { Endpoint: string
+      Basin: S2.Basin }
+
+type RunningHost =
+    { Name: string
+      Endpoint: string
+      ProcessId: int }
+
+type WorkloadContext =
+    { TrialId: string
+      S2: RunningS2
+      Hosts: Map<string, RunningHost>
+      Evidence: EvidenceSink
+      Faults: FaultController }
+
+type CompletedTrial<'result> =
+    { ProofName: string
+      PropertyName: string
+      TrialId: string
+      Result: Result<'result, exn>
+      Evidence: EvidenceStore }
+
+type Check<'result> =
+    { Name: string
+      Run: CompletedTrial<'result> -> Async<Result<unit, string>> }
+```
+
+The first implementation can constrain all properties to require `s2Lite`.
+Relax that later if a proof does not need S2.
+
+## Runner Order
+
+For each selected proof property:
+
+1. Generate a trial id.
+2. Start `s2 lite` if requested.
+3. Start all declared host processes.
+4. Inject standard environment into every host:
+   - `EFF_TRIAL_ID`
+   - `EFF_HOST_ID`
+   - `S2_ENDPOINT`
+   - user-specified env such as `HOST_PORT`
+5. Wait for every readiness probe.
+6. Record `verification.host.start` evidence for each host.
+7. Run the workload.
+8. Capture the workload result or exception.
+9. Run verifiers against `CompletedTrial`.
+10. Write a JSON report when requested or on failure.
+11. Stop hosts in reverse creation order.
+12. Stop `s2 lite`, unless preservation is requested after a failure.
+
+This runner order is what makes checks such as `Evidence.hostStarted "a"` real.
+They assert runner-owned evidence, not proof-local guesses.
+
+## Computation Expression Modules
+
+Recommended source layout:
 
 ```text
 src/
-  Foundation/
-    SubjectHistory.fs      # exists
-    WorkHistory.fs         # exists — concrete record/codec/fold over SubjectHistory
-    StateView.fs           # next, to its SDD signature
-    KvStore.fs             # next, to its SDD signature
-
   Proofs/
-    Harness.fs             # exists — generic, behavior-free
-    SubjectHistoryProof.fs # exists — drives SubjectHistory
-    StateViewProof.fs      # next, alongside StateView
-    KvStoreProof.fs        # next, alongside KvStore
-    Registry.fs            # exists — the one list of all proofs
+    Proof.fs          # proof CE and Proof<'result>
+    Property.fs       # property CE and PropertySpec<'result>
+    ProcessHost.fs    # processHost CE, readiness, lifecycle
+    S2Lite.fs         # s2 lite supervisor
+    Expect.fs         # workloadResult, predicate
+    Evidence.fs       # initial runner evidence checks
+    Reports.fs        # JSON reports
+    Runner.fs         # selection, execution, summary, exit code
+    Registry.fs       # compiled list of proofs
 ```
 
-Later-stage, as the suite grows and the harness needs to formalize (do not
-build ahead of need):
+Avoid a central `Harness.fs` abstraction. If an assertion helper survives, keep
+it private or compatibility-only. The proof runner is `Property + Runner`, not
+`Context + check`.
 
-```text
-src/Proofs/                # grown from Harness.fs as proofs demand it
-  Evidence.fs              # operation histories, domain events
-  Reports.fs               # JSON trial reports
-  Hosts.fs                 # process-host lifecycle
-  Faults.fs                # fault plans
-  Linearizability.fs       # model + checker adapter
-  Sql.fs                   # SQL views over evidence
+## Initial Evidence
 
-proofs/                    # distributed-behavior proofs + checker models
-  Models/{Counter,WorkflowRun,Lease,Register}.fs
-  StoreHostCrashRestart.fs
-  ObjectSerialization.fs
-  RuntimeScheduleSweep.fs
-  StaleOwnerFencing.fs
-  Main.fs
-```
-
-`src/Foundation` is the near-term production target from
-`docs/foundational-sdd.md`. Each layer ships with a compiled proof in
-`src/Proofs` that drives it against real S2 streams.
-
-`src/Proofs/Harness.fs` is generic: it knows about resources, sections,
-checks, cleanup, and (later) hosts, operations, evidence, reports, faults, and
-checkers — never about specific `eff-firegrid` workflow or object APIs. The
-later `proofs/` directory holds distributed-behavior proof definitions and
-checker models that define the intended sequential semantics of a subsystem,
-but no domain-specific support layers that wrap or simulate the system under
-test. A proof may import production modules from `src`, start production CLIs as
-processes, or call production HTTP/client surfaces, but it must not introduce a
-verification-only workflow host, object client, runtime facade, or event
-adapter.
-
-If a proof needs an easier way to start or call a subsystem, that is a signal
-that the production subsystem needs a clearer entrypoint. Add that entrypoint
-to production code, then use it from both proofs and real deployments.
-
-## Runtime Modes
-
-### Mode 1: Live Process
-
-The initial mode should run real Fable/Node processes, a real `s2 lite`
-process, and real host crashes.
-
-This mode can prove important behavior immediately:
-
-- persisted state survives host death
-- stale owners are fenced by durable stream evidence
-- schedule sweepers race through the real store
-- same-key object calls serialize through the real owner path
-
-This mode is not deterministic simulation. It is a real-process scenario
-runner with structured evidence and reproducible reports.
-
-### Mode 2: Controlled Process
-
-The second mode should still run real processes, but inject runner-owned
-services:
-
-- virtual clock
-- seedable random source
-- fault points
-- network/client wrappers
-- deterministic port allocation
-
-This mode moves proofs toward replayability without requiring a full simulator.
-
-### Mode 3: Simulated
-
-The final mode should run distributed components against simulated time,
-transport, storage, scheduling, and failure. This is the DST-style endgame.
-
-This requires production code to depend on interfaces for time, randomness,
-transport, scheduling, and fault points.
-
-## Production Hooks When Needed
-
-To scale beyond simple proofs, production code eventually needs narrow
-dependencies that proofs and the later proof runner can control. Add these
-only when a durable property needs them; do not pre-build a simulation surface
-before the kernel exists.
+Start with runner-owned evidence. It is enough to make host and S2 checks real.
 
 ```fsharp
-type IClock =
-    abstract NowMillis: unit -> int64
-    abstract Sleep: int64 -> Async<unit>
-
-type IRandom =
-    abstract NextInt: min: int * max: int -> int
-    abstract NextBytes: count: int -> byte[]
-
-type IFaultPoint =
-    abstract Reach: name: string * attributes: Map<string, string> -> Async<unit>
+type EvidenceEvent =
+    { TrialId: string
+      Category: string
+      Name: string
+      Subject: string option
+      Attributes: Map<string, string>
+      TimeNanos: int64 }
 ```
 
-`IFaultPoint` is especially important. Killing a process after an exported span
-is coarse. Crash proofs often need semantic cut points:
+Initial events:
+
+- `verification.s2_lite.start`
+- `verification.s2_lite.stop`
+- `verification.host.start`
+- `verification.host.ready`
+- `verification.host.stop`
+- `verification.host.kill`
+- `verification.workload.start`
+- `verification.workload.finish`
+
+Initial checks:
 
 ```fsharp
-do! faultPoint.Reach(
-    "workflow.journal.appended.before-ack",
-    Map [ "runId", runId; "eventType", "STEP_FINISHED" ]
-)
+module Expect =
+    val workloadResult: expected: 'result -> Check<'result> when 'result: equality
+    val workload: name: string -> predicate: ('result -> bool) -> Check<'result>
+
+module Evidence =
+    val hostStarted: name: string -> Check<'result>
+    val hostReady: name: string -> Check<'result>
+    val s2LiteStarted: Check<'result>
 ```
 
-The runner can then block, crash, resume, or reorder exactly at that point.
+SQL over evidence can come later. The first runner can query an in-memory
+`EvidenceEvent list`.
 
-## Evidence Model
+## Operation Evidence
 
-The eventual proof runner should record three evidence layers. Before the
-runner exists, proofs should print and optionally persist the same concepts in
-the simplest useful form.
-
-### Operation Evidence
-
-Operation evidence is client-observed call/return history. This is the primary
-input for linearizability checks.
+Operation history is required before linearizability checks. It should not be
+reconstructed from logs or raw spans.
 
 ```fsharp
 type OperationStatus =
@@ -355,726 +396,208 @@ type OperationEvent =
       ReturnTimeNanos: int64 }
 ```
 
-This must be a first-class artifact, not reconstructed from raw traces.
+Add an `operation` helper only when the first concurrent proof needs it. The
+object serialization proof can initially verify workload result plus host/S2
+evidence. A later linearizability proof can add operation recording.
 
-### Domain Event Evidence
+## Reports
 
-Domain event evidence is application-specific but normalized enough for
-queries and invariant checks.
-
-```fsharp
-type DomainEvent =
-    { TrialId: string
-      Category: string
-      Name: string
-      Subject: string option
-      Attributes: Map<string, string>
-      DataJson: string option
-      TimeNanos: int64 }
-```
-
-Examples:
-
-- `workflow.event.persisted`
-- `workflow.run.finished`
-- `object.owner.claimed`
-- `object.call.enqueued`
-- `lease.acquired`
-- `timer.scheduled`
-- `schedule.materialized`
-
-### Trace Evidence
-
-Traces and spans remain valuable for diagnostics and low-level checks. They
-should be exported and linked to the same trial id.
-
-However, traces should not be the only source of operation history. Span names
-and attributes are too loose for linearizability and model checking.
-
-## Report Format
-
-Every trial should write a self-contained JSON report when requested or when a
-failure occurs.
+Every failed trial should write a report that can explain what happened without
+rerunning immediately.
 
 ```json
 {
-  "proof": "store.runtime-schedule-sweep",
-  "trialId": "store.runtime-schedule-sweep-2026-06-26T18-00-00Z",
-  "seed": 123456,
-  "mode": "live-process",
+  "proof": "store.object-live-fencing",
+  "property": "store.object-live-fencing-proof",
+  "trialId": "store.object-live-fencing-1782622956956",
   "status": "failed",
-  "failedCheck": "single scheduled run completed",
-  "replayCommand": "npm run proofs -- --proof store.runtime-schedule-sweep --seed 123456",
+  "failedChecks": [],
   "resources": [],
-  "faultPlan": [],
+  "evidence": [],
   "operations": [],
-  "domainEvents": [],
-  "spanSummary": [],
-  "counterexample": {}
+  "replayCommand": "npm run proofs -- --proof store.object-live-fencing --trial-id store.object-live-fencing-1782622956956"
 }
 ```
 
-Required fields:
+The report format can grow, but the first version should include:
 
 - proof name
+- property name
 - trial id
-- seed
-- mode
-- status
-- failing check
+- workload result or error
+- failed checks
+- host metadata
+- S2 metadata
+- runner evidence
 - replay command
-- operation history
-- domain events
-- fault plan
-- resource metadata
 
-## F# DSL Shape
+## Commands
 
-The DSL should feel like normal F# async code with explicit proof boundaries.
-The `Eff.Production.*` names below are placeholders for real production
-exports. They are not verification-owned facades.
-
-```fsharp
-proof "store.host-crash-restart" {
-    description
-        "A workflow host pauses on a durable timer, dies, restarts, sweeps, and completes from S2 state."
-
-    resources {
-        use! s2 =
-            processHost "s2-lite" {
-                command "s2"
-                args [ "lite"; "--port"; "${port}"; "--local-root"; "${tempDir}" ]
-                readiness "/"
-                exposeEndpoint "S2_ENDPOINT"
-            }
-
-        use! host =
-            processHost "worker" {
-                command "node"
-                args [ "build/src/Program.js"; "workflow-host"; "--port"; "${port}" ]
-                env [ "S2_ENDPOINT", s2.Endpoint ]
-                readiness "/ready"
-                exposeEndpoint "WORKER_ENDPOINT"
-            }
-
-        let workflow = Eff.Production.WorkflowClient.connect host.Endpoint
-    }
-
-    scenario {
-        let! started =
-            op "workflow.start" {
-                client "driver"
-                key "crash-sleep:run-1"
-                input {| workflowId = "crash-sleep"; runId = "crash-sleep:run-1" |}
-                run workflow.StartRun {
-                    workflowId = "crash-sleep"
-                    runId = "crash-sleep:run-1"
-                    input = {| sleepUntil = 5000 |}
-                    now = 1000
-                }
-            }
-
-        do! Fault.killHost "worker"
-        do! Fault.restartHost "worker"
-
-        let! tick =
-            op "workflow.sweep" {
-                client "driver"
-                key "crash-sleep:run-1"
-                input {| now = 5000 |}
-                run workflow.Tick { now = 5000 }
-            }
-
-        let! execution =
-            op "workflow.load" {
-                client "driver"
-                key "crash-sleep:run-1"
-                run workflow.LoadExecution "crash-sleep:run-1"
-            }
-
-        return {| Started = started; Tick = tick; Execution = execution |}
-    }
-
-    verify {
-        workload (fun r ->
-            r.Execution.Status = "finished"
-            && r.Execution.Output = box {| completed = true |})
-
-        workflowEvents "run events are exactly once" {
-            runId "crash-sleep:run-1"
-            events [
-                "STEP_FINISHED"
-                "SIGNAL_AWAITED"
-                "SIGNAL_RESOLVED"
-                "STEP_FINISHED"
-                "RUN_FINISHED"
-            ]
-        }
-
-        evidenceSql "host was killed and restarted" """
-            SELECT countIf(name = 'host.kill' AND subject = 'worker') = 1
-               AND countIf(name = 'host.start' AND subject = 'worker') = 2 AS ok
-            FROM domain_events
-        """
-    }
-}
-```
-
-The example is intentionally application-level. It proves workflow behavior,
-not just S2 append/read behavior.
-
-## Complex Proof Examples
-
-### Object Same-Key Serialization
-
-This proof verifies that concurrent same-key calls serialize through the object
-owner and do not lose writes.
-
-```fsharp
-proof "object.same-key-serialization" {
-    resources {
-        use! s2 =
-            processHost "s2-lite" {
-                command "s2"
-                args [ "lite"; "--port"; "${port}"; "--local-root"; "${tempDir}" ]
-                readiness "/"
-                exposeEndpoint "S2_ENDPOINT"
-            }
-
-        use! host =
-            processHost "objects" {
-                command "node"
-                args [ "build/src/Program.js"; "object-host"; "--port"; "${port}" ]
-                env [ "S2_ENDPOINT", s2.Endpoint ]
-                readiness "/ready"
-                exposeEndpoint "OBJECT_ENDPOINT"
-            }
-
-        let counter =
-            Eff.Production.ObjectClient.connect host.Endpoint "counter" "counter-1"
-    }
-
-    scenario {
-        let! results =
-            concurrently [
-                actor "client-a" {
-                    return!
-                        op "counter.add" {
-                            client "client-a"
-                            key "counter-1"
-                            input {| by = 5 |}
-                            run counter.Add 5
-                        }
-                }
-
-                actor "client-b" {
-                    return!
-                        op "counter.add" {
-                            client "client-b"
-                            key "counter-1"
-                            input {| by = 7 |}
-                            run counter.Add 7
-                        }
-                }
-            ]
-
-        let! final =
-            op "counter.value" {
-                client "driver"
-                key "counter-1"
-                run counter.Value()
-            }
-
-        return {| Results = results; Final = final |}
-    }
-
-    verify {
-        workload (fun r ->
-            Set.ofList r.Results = Set.ofList [ 5; 12 ]
-            && r.Final = 12)
-
-        linearizable CounterModel.model {
-            key "counter-1"
-            operations [ "counter.add"; "counter.value" ]
-        }
-
-        invariant "owner stream has no lost writes" (fun evidence ->
-            evidence
-            |> Evidence.domainEvents "object.call.completed"
-            |> ObjectAssertions.noLostWrites "counter-1")
-    }
-}
-```
-
-Sequential model:
-
-```fsharp
-module CounterModel =
-    type Op =
-        | Add of by: int
-        | Value
-
-    type State = int
-
-    let model =
-        Linearizability.model {
-            initial 0
-
-            operation "counter.add" (fun state input ->
-                let by = Json.field<int> "by" input
-                let next = state + by
-                next, Json.int next)
-
-            operation "counter.value" (fun state _ ->
-                state, Json.int state)
-        }
-```
-
-### Runtime Schedule Sweep Race
-
-This proof verifies that two sweepers racing the same due schedule produce one
-completed scheduled run.
-
-```fsharp
-proof "runtime.schedule-sweep-single-winner" {
-    resources {
-        use! s2 =
-            processHost "s2-lite" {
-                command "s2"
-                args [ "lite"; "--port"; "${port}"; "--local-root"; "${tempDir}" ]
-                readiness "/"
-                exposeEndpoint "S2_ENDPOINT"
-            }
-
-        let runtimeA =
-            Eff.Production.WorkflowRuntime.create {
-                nodeId = "sweep-a"
-                s2Endpoint = s2.Endpoint
-            }
-
-        let runtimeB =
-            Eff.Production.WorkflowRuntime.create {
-                nodeId = "sweep-b"
-                s2Endpoint = s2.Endpoint
-            }
-    }
-
-    scenario {
-        do!
-            op "schedule.materialize" {
-                client "driver"
-                key "scheduled-workflow:every-second:5000"
-                input {| now = 5000 |}
-                run runtimeA.MaterializeSchedules { now = 5000 }
-            }
-
-        let! sweeps =
-            concurrently [
-                actor "sweeper-a" {
-                    return!
-                        op "runtime.sweep" {
-                            client "sweeper-a"
-                            key "scheduled-workflow:every-second:5000"
-                            input {| now = 5000; leaseOwner = "a" |}
-                            run runtimeA.Sweep {
-                                now = 5000
-                                leaseOwner = "a"
-                                maxScheduledRuns = 1
-                                maxTimers = 0
-                            }
-                        }
-                }
-
-                actor "sweeper-b" {
-                    return!
-                        op "runtime.sweep" {
-                            client "sweeper-b"
-                            key "scheduled-workflow:every-second:5000"
-                            input {| now = 5000; leaseOwner = "b" |}
-                            run runtimeB.Sweep {
-                                now = 5000
-                                leaseOwner = "b"
-                                maxScheduledRuns = 1
-                                maxTimers = 0
-                            }
-                        }
-                }
-            ]
-
-        let! run =
-            op "workflow.load" {
-                client "driver"
-                key "scheduled-workflow:every-second:5000"
-                run runtimeA.LoadExecution "scheduled-workflow:every-second:5000"
-            }
-
-        return {| Sweeps = sweeps; Run = run |}
-    }
-
-    verify {
-        workload (fun r ->
-            r.Run.Status = "finished"
-            && (r.Sweeps |> List.sumBy _.CompletedCount) = 1)
-
-        invariant "only one lease owner completed scheduled work" (fun evidence ->
-            evidence
-            |> Evidence.operationsNamed "runtime.sweep"
-            |> LeaseAssertions.singleWinner)
-
-        workflowEvents "one RUN_FINISHED event" {
-            runId "scheduled-workflow:every-second:5000"
-            count "RUN_FINISHED" 1
-        }
-    }
-}
-```
-
-### Stale Owner Fencing
-
-This proof verifies that an old object owner cannot commit after a newer owner
-has claimed the stream.
-
-```fsharp
-proof "object.stale-owner-fencing" {
-    resources {
-        use! s2 =
-            processHost "s2-lite" {
-                command "s2"
-                args [ "lite"; "--port"; "${port}"; "--local-root"; "${tempDir}" ]
-                readiness "/"
-                exposeEndpoint "S2_ENDPOINT"
-            }
-
-        use! hostA =
-            processHost "a" {
-                command "node"
-                args [ "build/src/Program.js"; "object-host"; "--port"; "${port}" ]
-                env [ "S2_ENDPOINT", s2.Endpoint ]
-                readiness "/ready"
-                exposeEndpoint "OBJECT_A_ENDPOINT"
-            }
-
-        use! hostB =
-            processHost "b" {
-                command "node"
-                args [ "build/src/Program.js"; "object-host"; "--port"; "${port}" ]
-                env [ "S2_ENDPOINT", s2.Endpoint ]
-                readiness "/ready"
-                exposeEndpoint "OBJECT_B_ENDPOINT"
-            }
-
-        let clientA =
-            Eff.Production.ObjectClient.connect hostA.Endpoint "counter" "counter-1"
-
-        let clientB =
-            Eff.Production.ObjectClient.connect hostB.Endpoint "counter" "counter-1"
-    }
-
-    scenario {
-        do!
-            op "counter.add" {
-                client "a"
-                key "counter-1"
-                input {| by = 1 |}
-                run clientA.Add 1
-            }
-
-        do! Fault.killHost "a"
-
-        do!
-            op "counter.add" {
-                client "b"
-                key "counter-1"
-                input {| by = 2 |}
-                run clientB.Add 2
-            }
-
-        do! Fault.restartHost "a"
-
-        let! staleResult =
-            op "counter.add" {
-                client "a"
-                key "counter-1"
-                input {| by = 3 |}
-                run clientA.Add 3
-            }
-
-        let! final =
-            op "counter.value" {
-                client "b"
-                key "counter-1"
-                run clientB.Value()
-            }
-
-        return {| StaleResult = staleResult; Final = final |}
-    }
-
-    verify {
-        workload (fun r -> r.Final = 3)
-
-        invariant "stale owner did not commit after fencing" (fun evidence ->
-            evidence
-            |> ObjectAssertions.staleOwnerRejected "counter-1" "a")
-
-        evidenceSql "fencing error was observed" """
-            SELECT countIf(
-                category = 'object'
-                AND name = 'owner.commit.rejected'
-                AND attributes['reason'] = 'stale-owner'
-            ) >= 1 AS ok
-            FROM domain_events
-        """
-    }
-}
-```
-
-## Linearizability Adapter
-
-The runner should expose a small F# model API, then translate operation
-histories to a checker.
-
-Initial implementation options:
-
-1. Export operation history and model cases to JSON, then call a Go Porcupine
-   sidecar.
-2. Implement a small F# linearizability checker for targeted finite models.
-
-The first option is faster and keeps compatibility with known prior art.
-
-Model shape:
-
-```fsharp
-type SequentialModel<'state> =
-    { Initial: 'state
-      Step:
-        'state
-          -> OperationEvent
-          -> Result<'state * JsonValue, string> }
-```
-
-Checker input:
-
-```fsharp
-type LinearizabilityInput =
-    { ModelName: string
-      Operations: OperationEvent list
-      InitialStateJson: string }
-```
-
-The checker should produce:
-
-- pass/fail
-- illegal operation
-- partial linearization if found
-- minimized counterexample when available
-
-## Fault Model
-
-Initial faults:
-
-```fsharp
-type FaultController =
-    abstract KillHost: name: string -> Async<unit>
-    abstract StopHost: name: string -> Async<unit>
-    abstract RestartHost: name: string -> Async<unit>
-    abstract KillAtFaultPoint:
-        host: string
-        * point: string
-        * attributes: Map<string, string>
-        -> Async<unit>
-```
-
-Eventually, faults should come from a seedable fault plan:
-
-```fsharp
-type FaultPlanStep =
-    | KillHost of host: string
-    | RestartHost of host: string
-    | DelayMessage of link: string * millis: int64
-    | DropMessage of link: string
-    | AdvanceClock of millis: int64
-    | AtFaultPoint of point: string * action: FaultPlanStep
-```
-
-The report must include the exact fault plan used.
-
-## Proof Commands
-
-One command runs the suite; selection is a filter, not a separate script.
+Proof execution remains compiled through the normal project.
 
 ```sh
-npm run proofs                    # compile + run every registered proof
-PROOF=foundation-00 npm run proofs   # only proofs whose name contains the substring
-PRESERVE=1 npm run proofs            # keep failed proofs' resources for inspection
-S2_BASIN=my-basin npm run proofs     # override the default basin
-
-npm run check                     # format + build + lint + fableSmoke + test + proofs
-npm run play                      # repl.fsx tour (unchanged)
-npm test                          # tests/Suite.fsx integration suite (unchanged)
+npm run proofs
+npm run proofs -- --proof store.object-serialization
+npm run proofs -- --proof store.object-live-fencing
+npm run proofs -- --trial-id my-repro
+PRESERVE=1 npm run proofs -- --proof store.object-live-fencing
 ```
 
-`npm run proofs` is wired through the repo build tool (`tools/repo/Program.fs`).
-It compiles the normal project and then runs the emitted proof CLI:
+The build target should compile the project and run the emitted CLI:
 
 ```sh
 dotnet fable eff-firegrid.fsproj --outDir build_proofs --noCache
 node build_proofs/src/Program.js proofs
-# PROOF / PRESERVE / S2_BASIN are read from the environment
 ```
 
-The `Proofs` target also accepts `--proof <name>` directly. `build_proofs/` is
-in `.gitignore` and the linter's ignore list. Adding a proof is two edits: a new
-`src/Proofs/<Name>Proof.fs` (in the `.fsproj`) and one line in
-`src/Proofs/Registry.fs` — no new `npm` target.
+The CLI should parse arguments directly instead of relying only on environment
+variables:
 
-Later, after the proof runner grows a CLI, add commands such as:
-
-```sh
-npm run proofs -- list
-npm run proofs -- run store.host-crash-restart --seed 123456
-npm run proofs -- replay reports/store.host-crash-restart-123456.json
+```text
+proofs list
+proofs run [--proof <substring>] [--trial-id <id>] [--preserve]
+proofs replay <report.json>
 ```
 
-## First Milestone
+`npm run proofs` can continue to map to `proofs run`.
 
-Stand up the compiled, enforced proof suite. **Done.**
+## Milestone 1: Compiled Property Runner
+
+This is the first real milestone. It is not done until a proof can be expressed
+as a property with resources, workload, and verification.
 
 Deliverables:
 
-1. ✅ `src/Proofs/Harness.fs` — generic `section` / `check` / `expectEqual` /
-   `note`, `uniq`, cleanup registry, `config`, and `runProofs`. Compiled into
-   `eff-firegrid.fsproj`.
-2. ✅ `src/Foundation/WorkHistory.fs` — concrete durable-work record, codec,
-   fold, and append/fold wrappers over `SubjectHistory`.
-3. ✅ `src/Proofs/SubjectHistoryProof.fs` — proves expected-sequence append,
-   conflict classification, and cursor/fold behavior against real S2 by driving
-   the foundation surfaces rather than defining the domain under proof inline.
-4. ✅ `src/Proofs/Registry.fs` — the single list of proofs.
-5. ✅ `src/Program.fs` — compiled proof CLI entrypoint; `npm run proofs` (with
-   `PROOF` / `PRESERVE` / `S2_BASIN`) compiles the project and runs the emitted
-   `build_proofs/src/Program.js proofs`.
-6. ✅ `npm run proofs` added to `npm run check`, so `dotnet build` (type-check
-   + FS1182), `fsharplint`, and the live-S2 run are all CI-gated.
+1. `src/Proofs/Proof.fs`
+2. `src/Proofs/Property.fs`
+3. `src/Proofs/ProcessHost.fs`
+4. `src/Proofs/S2Lite.fs`
+5. `src/Proofs/Expect.fs`
+6. `src/Proofs/Evidence.fs`
+7. `src/Proofs/Reports.fs`
+8. `src/Proofs/Runner.fs`
+9. `src/Proofs/Registry.fs`
+10. `src/Program.fs` CLI that runs `Runner`
 
-This milestone intentionally avoids the full proof runner, process-host
-abstraction, simulator, and linearizability checker.
+Acceptance criteria:
 
-## Second Milestone
+1. Proofs are compiled into `eff-firegrid.fsproj`.
+2. `npm run proofs -- --proof store.object-serialization` starts S2 if needed,
+   runs the workload, runs verifiers, and exits non-zero on failure.
+3. Failed proofs write a JSON report.
+4. `PRESERVE=1` or `--preserve` keeps resources after failure.
+5. No `.fsx` proof launcher exists.
 
-Grow the foundation, top-down from the SDD, one proof per layer.
+## Milestone 2: First Object Serialization Proof
 
-For each layer: write the production primitive to its SDD signature, add a
-compiled proof that drives it against real S2, register it.
+Implement the closest F# equivalent of the fluent
+`store-object-serialization.ts` proof.
+
+Production surface:
+
+- a small durable actor/object surface in `src/Foundation` or the production
+  runtime module
+- a counter object/actor used by the proof
+- no proof-local fake runtime
+
+Proof:
+
+- `src/Proofs/StoreObjectSerializationProof.fs`
+- workload runs two concurrent same-key `add` calls
+- workload reads final value
+- verifier checks completed calls, max result, and final value
+
+This milestone proves that the property runner is useful before adding process
+host complexity.
+
+## Milestone 3: Multiple Host Live-Fencing Proof
+
+Implement the closest F# equivalent of the fluent
+`store-object-live-fencing.ts` proof.
+
+Runner additions:
+
+- `hosts [ processHost "a" { ... }; processHost "b" { ... } ]`
+- readiness probes
+- runner evidence for host start/ready/stop
+- fault controller with host kill/stop/restart
+
+Proof:
+
+- `src/Proofs/StoreObjectLiveFencingProof.fs`
+- starts S2 lite
+- starts host `a`
+- starts host `b`
+- begins a deposed request on host `a`
+- waits until S2 evidence shows the deposed call started
+- sends takeover request to host `b`
+- verifies host `b` owns the final value
+- verifies runner evidence saw both hosts start
+
+## Milestone 4: Operation History
+
+Add first-class operation evidence when concurrent proofs need model checking.
 
 Deliverables:
 
-1. `src/Foundation/StateView.fs` + `src/Proofs/StateViewProof.fs` proving
-   eventual and strong reads over the KV-demo-style orchestrator loop.
-2. `src/Foundation/KvStore.fs` + `src/Proofs/KvStoreProof.fs` proving the S2 KV
-   pattern end to end.
-3. Both registered in `Registry.fs` and green under `npm run proofs`.
+- `OperationEvent`
+- operation wrapper for workload code
+- JSON report operation history
+- initial linearizability adapter API
 
-Surface rule: a proof drives the production surface directly. If a proof needs
-an easier entrypoint, add it to the production module and use it from both the
-proof and real deployments — never a verification-only substitute.
+Do not block Milestones 1-3 on this. Workload result checks and runner evidence
+are enough to make the first object proofs meaningful.
 
-## Third Milestone
+## Design Rules
 
-Prove the first deferred durable-work semantics after the happy path is stable.
-Each is a production primitive plus a compiled proof in the registry.
+1. A proof is a compiled declaration of properties.
+2. A property has resources, workload, and verifiers.
+3. Host processes are resources owned by the runner.
+4. Proof code may drive production APIs, HTTP handlers, CLIs, or generated
+   clients.
+5. Proof code must not define a fake production runtime to make verification
+   easier.
+6. Runner evidence is canonical for host/S2 lifecycle.
+7. Operation history is canonical for linearizability.
+8. Traces are useful diagnostics and optional evidence, not the only ledger.
+9. `section/check/expectEqual` are not the proof API.
+10. CE syntax must remain valid F#.
 
-1. Effectively-once output suppression.
-2. Output-producing invocation runtime.
-3. Minimal operation ledger proving recorded completion prevents re-execution.
-4. Coordination claim.
-5. Fencing / checkpoint.
-6. Timer / external wait, only after the state-view path is stable.
-7. Wake projection rebuild, only after state-view indexes exist.
+## Migration From Current Harness
 
-These stay readable: print the records, print the fold, make the failing check
-obvious without a separate report viewer.
+Current `src/Proofs/Harness.fs` should not be the long-term abstraction.
 
-## Fourth Milestone
+Short-term options:
 
-Introduce structured evidence in the harness only after proofs need it.
+1. Delete it when `Runner.fs` lands.
+2. Keep only tiny formatting helpers behind `Expect`.
+3. Move cleanup and summary behavior into `Runner.fs`.
 
-1. Operation-history record type for concurrent proof sections.
-2. JSON trial reports for failed proofs (`src/Proofs/Reports.fs`).
-3. Production instrumentation for durable records and folds if useful.
-4. F# sequential model API for one small model.
-5. Porcupine sidecar or native checker spike once operation histories are
-   stable.
+Current `SubjectHistoryProof` can be migrated into a property:
 
-## Fifth Milestone
+```fsharp
+let subjectHistory =
+    proof "foundation.subject-history" {
+        describedAs "SubjectHistory append, conflict, and fold behavior."
 
-Grow the harness into a proof runner and move toward deterministic simulation.
+        property (
+            property "foundation.subject-history-proof" {
+                s2LiveFromEnv
 
-1. Resource/host primitives in `src/Proofs` once production hosts exist.
-2. `IClock`, `IRandom`, and `IFaultPoint` integrated into production code.
-3. Controlled-process runtime mode.
-4. Seedable fault plan generator.
-5. Replay command that restores seed, resources, and fault plan.
+                workload (fun ctx ->
+                    async {
+                        // create stream, append records, fold, return summary
+                    })
 
-## Design Principles
+                verify [
+                    Expect.workload "append and fold summary is valid" (fun result ->
+                        result.TailAdvanced
+                        && result.ConflictObserved
+                        && result.FoldObservedPendingTimer)
+                ]
+            })
+    }
+```
 
-1. Proofs are compiled and drive production APIs; the build enforces them.
-2. Proofs print authoritative records and derived folds.
-3. The shared harness stays generic and behavior-free.
-4. Operation history becomes first-class when concurrency proofs need it.
-5. Domain events become first-class when records/folds are not enough context.
-6. Traces are diagnostics and supplementary evidence.
-7. Faults happen at semantic boundaries where possible.
-8. Counterexample preservation starts as "do not clean up this stream"
-   (`PRESERVE=1`) and only later becomes structured reports.
-9. The runner grows from the harness, then evolves toward deterministic
-   simulation.
-10. Any eventual proof DSL should remain ordinary F# async code, not a separate
-    language.
-
-## Resolved Decisions
-
-The first milestone settled the harness-shaped questions:
-
-1. **Compiled, not scripted.** Proofs live in `src/Proofs/*.fs`, compiled into
-   `eff-firegrid.fsproj`, so the build and linter enforce them. A proof is a
-   `Name + (Context -> Async<unit>)` value; `src/Program.fs` is the compiled
-   CLI entrypoint that runs the registry.
-2. **Smallest harness.** `section` / `check` / `expectEqual` / `note`, `uniq`,
-   a cleanup registry, `config` (the basin), and `runProofs`. Nothing workflow-
-   or S2-specific lives in it.
-3. **Preservation is opt-in.** Cleanup runs by default; `PRESERVE=1` keeps a
-   failed proof's resources and prints what was left behind. Defaulting to
-   cleanup keeps reruns cheap; the flag is there for the rare counterexample.
-4. **Print first, JSON later.** Proofs print authoritative records and folds;
-   structured JSON evidence is deferred to the Fourth Milestone, introduced only
-   once concurrency proofs need it.
-5. **Stream naming.** `"<prefix>-<epochMillis>-<counter>"` via `Harness.uniq` —
-   readable, unique per run, sortable, and easy to sweep by prefix. The basin
-   defaults to `test-basin-885234` and is overridable with `S2_BASIN`.
-
-Still open, deferred to the milestone that needs them:
-
-6. When production hosts arrive, should proofs drive them through HTTP, CLI,
-   direct Fable imports, or all of the above?
-7. Should the first linearizability checker be a Porcupine sidecar or a small
-   native F# checker?
-
-## Recommendation
-
-Make verification a compiled, enforced proof suite from the start — the harness
-and proofs live in `src/Proofs` and ride the build. Then grow the
-`docs/foundational-sdd.md` layers top-down: write each production primitive to
-its SDD signature, add a compiled proof that drives it against real S2, and
-register it. Order: SubjectHistory (done), StateView, KvStore.
-
-Keep the harness generic. Add runner machinery — hosts, evidence, reports,
-faults, checkers — only when a proof needs it, extracting the generic part into
-`src/Proofs`, never domain-specific fakes.
-
-Do not start with a full deterministic simulator. Instead, design production
-boundaries so deterministic control can replace live behavior later: clock,
-randomness, fault points, transport, and fault plans.
-
-Do not make raw OTel spans the canonical history format. Emit spans for
-diagnostics, but make operation history and domain events the canonical proof
-ledger.
+That keeps the compiled foundation proof, but expresses it through the same
+property runner as the object proofs.

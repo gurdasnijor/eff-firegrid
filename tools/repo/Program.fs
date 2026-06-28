@@ -18,12 +18,15 @@ module Program =
 
     let root = AppContext.BaseDirectory |> DirectoryInfo |> findRoot
 
-    let run (fileName: string) (args: string list) =
+    let runWithEnv (fileName: string) (args: string list) (env: (string * string) list) =
         let psi = ProcessStartInfo()
         psi.FileName <- fileName
 
         for arg in args do
             psi.ArgumentList.Add(arg)
+
+        for (key, value) in env do
+            psi.Environment.[key] <- value
 
         psi.WorkingDirectory <- root
         psi.UseShellExecute <- false
@@ -33,6 +36,8 @@ module Program =
 
         if proc.ExitCode <> 0 then
             failwithf "Command failed (%d): %s %s" proc.ExitCode fileName (String.concat " " args)
+
+    let run (fileName: string) (args: string list) = runWithEnv fileName args []
 
     let deleteDir relative =
         let path = Path.Combine(root, relative)
@@ -46,6 +51,7 @@ module Program =
           "build"
           "build_test"
           "build_bench"
+          "build_proofs"
           "build_script"
           "build_scripts"
           "build_subject_history"
@@ -62,6 +68,19 @@ module Program =
                 | "-t" when index + 1 < argv.Length -> argv.[index + 1]
                 | value when value.StartsWith("--target=", StringComparison.Ordinal) ->
                     value.Substring("--target=".Length)
+                | _ -> loop (index + 1)
+
+        loop 0
+
+    let selectedProof (argv: string array) =
+        let rec loop index =
+            if index >= argv.Length then
+                None
+            else
+                match argv.[index] with
+                | "--proof" when index + 1 < argv.Length -> Some argv.[index + 1]
+                | value when value.StartsWith("--proof=", StringComparison.Ordinal) ->
+                    Some(value.Substring("--proof=".Length))
                 | _ -> loop (index + 1)
 
         loop 0
@@ -114,6 +133,15 @@ module Program =
               "build_script"
               "--runScript" ]
 
+    let proofs proof =
+        let env =
+            match proof with
+            | Some name -> [ "PROOF", name ]
+            | None -> []
+
+        run "dotnet" [ "fable"; "eff-firegrid.fsproj"; "--outDir"; "build_proofs"; "--noCache" ]
+        runWithEnv "node" [ "build_proofs/src/Program.js"; "proofs" ] env
+
     let test () =
         run "dotnet" [ "fable"; "tests/Suite.fsx"; "--outDir"; "build_test" ]
         run "node" [ "build_test/Suite.js" ]
@@ -132,9 +160,12 @@ module Program =
         lint ()
         fableSmoke ()
         test ()
+        proofs None
 
     [<EntryPoint>]
     let main argv =
+        let proof = selectedProof argv
+
         let fakeContext: Context.FakeExecutionContext =
             { IsCached = false
               Context = ConcurrentDictionary<string, obj>()
@@ -155,6 +186,7 @@ module Program =
         Target.create "FableSmoke" (fun _ -> fableSmoke ())
         Target.create "Play" (fun _ -> play ())
         Target.create "ScriptSubjectHistory" (fun _ -> scriptSubjectHistory ())
+        Target.create "Proofs" (fun _ -> proofs proof)
         Target.create "Test" (fun _ -> test ())
         Target.create "Bench" (fun _ -> bench ())
         Target.create "BenchE2E" (fun _ -> benchE2E ())
@@ -168,6 +200,7 @@ module Program =
         "RestoreTools" ==> "FableSmoke" |> ignore
         "RestoreTools" ==> "Play" |> ignore
         "RestoreTools" ==> "ScriptSubjectHistory" |> ignore
+        "RestoreTools" ==> "Proofs" |> ignore
         "RestoreTools" ==> "Test" |> ignore
         "RestoreTools" ==> "Bench" |> ignore
         "RestoreTools" ==> "BenchE2E" |> ignore

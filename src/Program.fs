@@ -1,6 +1,28 @@
-// eff-firegrid — F#/Fable bindings for the S2 (s2.dev) streaming SDK.
-//
-// The reusable client lives in src/S2/ (Interop.fs + Client.fs).
-// The interactive playground lives in repl.fsx — run it with:
-//   npm run play      (or: dotnet fable repl.fsx --outDir build --runScript)
-printfn "eff-firegrid — see repl.fsx for the S2 playground"
+namespace Eff
+
+open Eff.Proofs
+
+module Program =
+    let private usage () =
+        printfn "eff-firegrid"
+        printfn ""
+        printfn "Commands:"
+        printfn "  proofs       Run the compiled validation proof suite"
+        printfn "  proofs list  List registered proof names"
+
+    let private listProofs () =
+        for proof in Registry.all do
+            printfn "%s" proof.Name
+
+    [<EntryPoint>]
+    let main argv =
+        match argv |> Array.toList with
+        | "proofs" :: "list" :: _ ->
+            listProofs ()
+            0
+        | "proofs" :: _ ->
+            Harness.runProofs Registry.all
+            0
+        | _ ->
+            usage ()
+            0

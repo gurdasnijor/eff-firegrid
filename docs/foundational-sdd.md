@@ -7,8 +7,8 @@ Happy-path foundation design, aligned to the S2 KV demo.
 This document intentionally excludes output-producing invocation guarantees,
 operation ledgers, coordination claims, leases, fencing, checkpoint trimming,
 timers, schedules, workflow APIs, and full proof-runner work. The goal is to
-build the smallest real S2-backed state-view path we can validate with compiled
-F#/Fable proofs.
+build the smallest real S2-backed state-view path we can validate with F#/Fable
+scripts.
 
 ## Objective
 
@@ -243,12 +243,12 @@ must not turn fencing-token loss or transient S2 errors into generic exceptions.
 established. Fencing and owner-local reads are a later capability; this C1 only
 keeps the physical append/fold pieces honest.
 
-### Compiled Validation Proof
+### Script First
 
 First proof:
 
 ```text
-src/Proofs/SubjectHistoryProof.fs
+scripts/foundation-00-subject-history.fsx
 ```
 
 Prove against real ephemeral S2 streams:
@@ -326,12 +326,12 @@ Write ack invariant:
 - owner-local linearizable reads are deferred until keyed ownership/fencing is
   introduced; they require self-demotion when the lease expires
 
-### Compiled Validation Proof
+### Script First
 
 Next proof:
 
 ```text
-src/Proofs/StateViewProof.fs
+scripts/foundation-01-state-view.fsx
 ```
 
 Prove:
@@ -339,7 +339,7 @@ Prove:
 - local fold state updates from tail records
 - eventual read can observe current local state
 - strong read calls `checkTail` and waits for `AppliedTail`
-- write ack returns before local apply where the proof can observe that window
+- write ack returns before local apply where the script can observe that window
 - second host can append; first host strong-read catches up to that append
 
 ## Capability C3: KvStore
@@ -413,28 +413,25 @@ strong get   = checkTail + wait for StateView catch-up
 src/
   Foundation/
     SubjectHistory.fs
-    WorkHistory.fs
     StateView.fs
     KvStore.fs
 
-  Proofs/
-    SubjectHistoryProof.fs
-    StateViewProof.fs
-    KvStoreProof.fs
-    Registry.fs
+scripts/
+  foundation-00-subject-history.fsx
+  foundation-01-state-view.fsx
+  foundation-02-kv-store.fsx
 ```
 
 ## Build Order
 
-Each layer starts as production code plus a compiled validation proof. No layer
-starts as a proof-local scratchpad.
+Each layer starts as a script proof, then promotes the stable code into `src/`.
 
-1. Write `src/Foundation/SubjectHistory.fs`, the concrete
-   `src/Foundation/WorkHistory.fs` validation surface, and
-   `src/Proofs/SubjectHistoryProof.fs`.
-2. Write `src/Foundation/StateView.fs` and `src/Proofs/StateViewProof.fs`.
-3. Write `src/Foundation/KvStore.fs` and `src/Proofs/KvStoreProof.fs`.
-4. Register each proof in `src/Proofs/Registry.fs`.
+1. Write `scripts/foundation-00-subject-history.fsx`; promote
+   `src/Foundation/SubjectHistory.fs`.
+2. Write `scripts/foundation-01-state-view.fsx`; promote
+   `src/Foundation/StateView.fs`.
+3. Write `scripts/foundation-02-kv-store.fsx`; promote
+   `src/Foundation/KvStore.fs`.
 
 ## Acceptance Criteria
 
@@ -446,5 +443,5 @@ The happy-path foundation is ready for the next design pass when:
 3. `StateView` proves eventual and strong reads over a KV-demo-style
    orchestrator loop.
 4. `KvStore` proves the S2 KV pattern end to end.
-5. Every proof is compiled F#/Fable code using production modules and real S2
-   streams, registered in `src/Proofs/Registry.fs`.
+5. Every proof is an F#/Fable script using production modules and real S2
+   streams.

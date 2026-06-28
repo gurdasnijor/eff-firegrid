@@ -6,7 +6,8 @@ obj/
 build/
 build_test/
 build_bench/
-build_proofs/
+build_script/
+build_scripts/
 build_subject_history/
 fable_modules/
 node_modules/

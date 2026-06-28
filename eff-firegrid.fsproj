@@ -15,13 +15,6 @@
     <Compile Include="src/S2/Cli.fs" />
     <Compile Include="src/S2/Patterns.fs" />
     <Compile Include="src/Foundation/SubjectHistory.fs" />
-    <Compile Include="src/Foundation/WorkHistory.fs" />
-    <Compile Include="src/Foundation/EffectLedger.fs" />
-    <Compile Include="src/Proofs/Harness.fs" />
-    <Compile Include="src/Proofs/SubjectHistoryProof.fs" />
-    <Compile Include="src/Proofs/EffectLedgerProof.fs" />
-    <Compile Include="src/Proofs/FencingProof.fs" />
-    <Compile Include="src/Proofs/Registry.fs" />
     <Compile Include="src/Program.fs" />
   </ItemGroup>
 

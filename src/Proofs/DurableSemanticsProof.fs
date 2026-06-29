@@ -9,6 +9,7 @@ module DurableSemanticsProof =
           FanOutReplay: bool
           WhenAnyReplay: bool
           TimeAndLoggingReplay: bool
+          ErgonomicApiLowersToTerms: bool
           ReplayLaws: bool
           SubstrateNaming: bool }
 
@@ -347,6 +348,99 @@ module DurableSemanticsProof =
         && replayDoesNotAddLogNeeds
         && crashEquivalent
 
+    let private checkErgonomicApiLowersToTerms () =
+        let helloApi =
+            durable {
+                let! first = Workflow.call "hello" "Tokyo"
+                let! second = Workflow.call "hello" first
+                return "done:" + second
+            }
+
+        let helloTerms =
+            Durable.perform (Activities.create "hello" "Tokyo")
+            |> Durable.bind (fun first -> Durable.perform (Activities.create "hello" first))
+            |> Durable.bind (fun second -> Durable.result ("done:" + second))
+
+        let apiResult, apiHistory = drive History.empty helloApi
+        let termResult, termHistory = drive History.empty helloTerms
+
+        let sequentialCallParity =
+            apiResult = termResult && History.toList apiHistory = History.toList termHistory
+
+        let fanOutApi =
+            durable {
+                let! values =
+                    Workflow.all
+                        [ Activities.create "backup" "a.txt"
+                          Activities.create "backup" "b.txt"
+                          Activities.create "backup" "c.txt" ]
+
+                return String.concat "," values
+            }
+
+        let fanOutDispatches =
+            match Durable.replay History.empty fanOutApi with
+            | Blocked(OpId 0, NeedsActivities pending) ->
+                pending = [ OpId 0, Activities.create "backup" "a.txt"
+                            OpId 1, Activities.create "backup" "b.txt"
+                            OpId 2, Activities.create "backup" "c.txt" ]
+            | _ -> false
+
+        let phoneApi =
+            durable {
+                let! winner = Workflow.any [ DurableTask.signal "approved"; DurableTask.timer 1000L ]
+
+                match winner with
+                | EventWon(0, Signal "approved", payload) -> return "approved:" + payload
+                | EventWon(1, Timer _, _) -> return "timeout"
+                | _ -> return "unexpected"
+            }
+
+        let whenAnyApiCancelsLosingTimer =
+            let signaled =
+                History.empty |> History.append (SignalReceived(OpId 0, "approved", "yes"))
+
+            match Durable.replay signaled phoneApi with
+            | Blocked(OpId 0, NeedsTimerCancellation [ OpId 1 ]) -> true
+            | _ -> false
+
+        let whenAnyApiCompletes =
+            let history =
+                History.empty
+                |> History.append (SignalReceived(OpId 0, "approved", "yes"))
+                |> History.append (TimerCanceled(OpId 1))
+
+            match Durable.replay history phoneApi with
+            | Done value -> value = "approved:yes"
+            | _ -> false
+
+        let monitorApi =
+            durable {
+                let! now = Workflow.currentTime
+                do! Workflow.log ("api-monitor:" + string now)
+                do! Workflow.sleepUntil (now + 10L)
+                return "done:" + string now
+            }
+
+        let monitorStartsWithCurrentTime =
+            match Durable.replay History.empty monitorApi with
+            | Blocked(OpId 0, NeedsCurrentTime) -> true
+            | _ -> false
+
+        let monitorResult, monitorHistory = drive History.empty monitorApi
+
+        let monitorReplaySafe =
+            match Durable.replay monitorHistory monitorApi with
+            | Done replayed -> replayed = monitorResult
+            | _ -> false
+
+        sequentialCallParity
+        && fanOutDispatches
+        && whenAnyApiCancelsLosingTimer
+        && whenAnyApiCompletes
+        && monitorStartsWithCurrentTime
+        && monitorReplaySafe
+
     let private runWorkload ctx =
         ProofOperation.run
             ctx
@@ -361,6 +455,7 @@ module DurableSemanticsProof =
                       FanOutReplay = checkFanOutReplay ()
                       WhenAnyReplay = checkWhenAnyReplay ()
                       TimeAndLoggingReplay = checkTimeAndLoggingReplay ()
+                      ErgonomicApiLowersToTerms = checkErgonomicApiLowersToTerms ()
                       ReplayLaws = programs |> List.forall (snd >> replayLawsHold)
                       SubstrateNaming =
                         let key = StorageKey "orders/123"
@@ -375,7 +470,8 @@ module DurableSemanticsProof =
                           "proof.activity_replay", string result.ActivityReplay
                           "proof.fan_out", string result.FanOutReplay
                           "proof.when_any", string result.WhenAnyReplay
-                          "proof.time_logging", string result.TimeAndLoggingReplay ]
+                          "proof.time_logging", string result.TimeAndLoggingReplay
+                          "proof.ergonomic_api", string result.ErgonomicApiLowersToTerms ]
 
                 return result
             })
@@ -394,6 +490,7 @@ module DurableSemanticsProof =
                       FanOutReplay = true
                       WhenAnyReplay = true
                       TimeAndLoggingReplay = true
+                      ErgonomicApiLowersToTerms = true
                       ReplayLaws = false
                       SubstrateNaming = true }
             })
@@ -418,6 +515,8 @@ module DurableSemanticsProof =
                   v.Expect.Workload "fan-out/fan-in replay" (fun result -> result.FanOutReplay)
                   v.Expect.Workload "when-any replay" (fun result -> result.WhenAnyReplay)
                   v.Expect.Workload "time/logging replay" (fun result -> result.TimeAndLoggingReplay)
+                  v.Expect.Workload "ergonomic API lowers to replay terms" (fun result ->
+                      result.ErgonomicApiLowersToTerms)
                   v.Expect.Workload "replay laws" (fun result -> result.ReplayLaws)
                   v.Expect.Workload "substrate naming" (fun result -> result.SubstrateNaming)
                   v.Trace.SpanExists
@@ -428,7 +527,11 @@ module DurableSemanticsProof =
                       "durable operation was recorded"
                       ({ TraceOperationMatch.named "durable.replay.laws" with
                           Status = Some "ok"
-                          OutputContains = [ "ActivityReplay"; "TimeAndLoggingReplay"; "ReplayLaws" ]
+                          OutputContains =
+                              [ "ActivityReplay"
+                                "TimeAndLoggingReplay"
+                                "ErgonomicApiLowersToTerms"
+                                "ReplayLaws" ]
                           Count = Some 1 }) ])
 
             negativeControl brokenReplayLawControl

@@ -17,6 +17,8 @@ Three load-bearing resolutions, now concrete instead of hand-waved:
 Implementation status:
 
 - Start with this document as the architecture of record.
+- Use `durable-execution-library-sdd.md` as the public API and library packaging
+  contract above this substrate.
 - Reuse the pure replay semantics as the executable contract, but do not let it defer the S2 binding. The implementation path is: pure replay core → S2 two-stream substrate → relay/timer dispatch.
 - Treat `FencingTokenMismatch` precisely: it means the stream's current fencing token is different from ours. That usually means another host has claimed ownership; it does **not** by itself prove the other host has committed user work.
 - Pick one log record format per path. Base S2 text records are fine for the first implementation; use bytes + `S2Patterns.producer/consumer` only when chunking/dedup framing is required. Do not write text records and then read them through the bytes-pattern consumer.

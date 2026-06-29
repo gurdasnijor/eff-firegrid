@@ -86,12 +86,12 @@ Implemented slices:
 - **Tier 2.5 activity command adapter.**
   `ActivityCommandAdapter.runOnce` processes the `"activity"` dispatch cursor:
   it invokes registered handlers only for committed `CallActivity` commands,
-  commits `ActivityCompleted` records under the owner fence, and checkpoints the
-  activity dispatcher only after durable completion admission. The compiled
-  proof covers committed-command invocation, completion-before-checkpoint
-  ordering, retry suppression after completion, missing-handler failure without
-  checkpointing, non-activity command skipping, and stale-owner checkpoint
-  rejection.
+  publishes `CompleteActivity` inbox envelopes with source-sequence provenance,
+  and checkpoints the activity dispatcher only after durable inbox publication.
+  The compiled proof covers committed-command invocation, inbox publication,
+  retry suppression after checkpoint, publish-before-checkpoint crash retry
+  suppression, missing-handler failure without checkpointing, non-activity
+  command skipping, and stale-owner checkpoint rejection.
 - **Tier 2.6 inbox fold.**
   `InboxFold.runOnce` admits fresh `{key}/in` arrivals into the fenced log. The
   inbox body shape is `InboxEnvelope`, carrying source id, source sequence
@@ -103,12 +103,21 @@ Implemented slices:
   completion admission, cursor reconstruction after restart, source-message
   dedup, fail-closed malformed inbox decoding, stale-owner rejection, and inbox
   envelope codec round-trip.
+- **Tier 2.7 activity completion through inbox composition.**
+  `DurableHost.runOnce`, `ActivityCommandAdapter.runOnce`, and
+  `InboxFold.runOnce` now compose into the first end-to-end activity completion
+  path: host emits a committed `CallActivity`, the adapter publishes a
+  `CompleteActivity` inbox envelope, the fold admits it into history, and the
+  next host tick advances replay. The compiled proof covers a two-activity
+  workflow one narrow tick at a time, host waiting before fold admission,
+  absence of direct adapter completion writes, restart after inbox publish
+  before fold, and duplicate completion-envelope suppression.
 
 Next slices, still one layer + proof at a time:
 
-- thread the activity adapter through `{key}/in`: have activity completion
-  publication target the inbox envelope shape and prove host + adapter + inbox
-  fold can complete a two-activity workflow one narrow tick at a time.
+- introduce a composed host tick surface that claims an instance and executes
+  the proven sequence `fold inbox -> step workflow -> dispatch activities`
+  behind one ergonomic operation result.
 
 One surprising constraint surfaced from your own code — see §1.
 

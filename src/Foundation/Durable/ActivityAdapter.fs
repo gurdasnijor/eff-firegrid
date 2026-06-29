@@ -4,6 +4,7 @@ open Eff
 
 type ActivityCommandCompletion =
     { SourceSeqNum: int64
+      InboxSeqNum: int64
       OpId: OpId
       Activity: Activity
       Value: Payload }
@@ -12,6 +13,7 @@ type ActivityCommandAdapterReport =
     { Batch: DispatchBatch
       Completed: ActivityCommandCompletion list
       AlreadyCompleted: int
+      AlreadyPublished: int
       Ignored: int
       Checkpoint: CommandDispatchCheckpointResult }
 
@@ -19,9 +21,11 @@ type ActivityCommandAdapterReport =
 type ActivityCommandAdapterFailure =
     | LogReadFailed of string
     | DecodeFailed of seqNum: int64 * error: string
+    | InboxReadFailed of string
+    | InboxDecodeFailed of seqNum: int64 * error: string
     | MissingHandler of ActivityName
     | HandlerFailed of ActivityName * error: string
-    | CompletionCommitFailed of S2Errors.S2Failure
+    | CompletionPublishFailed of string
     | CheckpointFailed of CommandDispatchFailure
 
 [<RequireQualifiedAccess>]
@@ -33,6 +37,8 @@ type ActivityCommandAdapterStatus =
 [<RequireQualifiedAccess>]
 module ActivityCommandAdapter =
     let dispatcher = "activity"
+
+    let completionSource = "activity"
 
     let private decodeLog decoded =
         let rec loop records =
@@ -61,20 +67,70 @@ module ActivityCommandAdapter =
                 return Error(ActivityCommandAdapterFailure.HandlerFailed(ActivityName activity.Name, error.Message))
         }
 
-    let private commitCompletion encode owned opId value =
-        let event = ActivityCompleted(opId, value)
-
+    let private readPublishedCompletions decode owned =
         async {
-            let! result = S2Substrate.commitText encode [ Incoming(HistoryEvent event) ] owned
+            let pageSize = 100
 
-            return
-                match result with
-                | Committed ack -> Ok(ack, event)
-                | Deposed expected -> Error(ActivityCommandAdapterStatus.Deposed expected)
-                | CommitFailed failure ->
+            let rec readPage from seen =
+                async {
+                    try
+                        let! records = S2Substrate.readInbox from pageSize owned
+
+                        let rec decodeRecords nextSeqNum state =
+                            function
+                            | [] -> Ok(nextSeqNum, state)
+                            | (record: S2.ReadRecord) :: rest ->
+                                match decode record.Body with
+                                | Ok envelope ->
+                                    let state =
+                                        match envelope.Message with
+                                        | CompleteActivity _ when envelope.Source = completionSource ->
+                                            state |> Set.add envelope.SourceSeqNum
+                                        | StartWorkflow _
+                                        | RaiseSignal _
+                                        | CompleteActivity _ -> state
+
+                                    decodeRecords (record.SeqNum + 1L) state rest
+                                | Error error ->
+                                    Error(ActivityCommandAdapterFailure.InboxDecodeFailed(record.SeqNum, error))
+
+                        match decodeRecords from seen records with
+                        | Error failure -> return Error failure
+                        | Ok(nextSeqNum, state) ->
+                            if List.isEmpty records then
+                                return Ok state
+                            else
+                                return! readPage nextSeqNum state
+                    with error ->
+                        match S2Errors.classify error with
+                        | S2Errors.RangeNotSatisfiable _ -> return Ok seen
+                        | _ -> return Error(ActivityCommandAdapterFailure.InboxReadFailed error.Message)
+                }
+
+            return! readPage 0L Set.empty
+        }
+
+    let private publishCompletion owned sourceSeqNum opId value =
+        async {
+            let envelope =
+                { Source = completionSource
+                  SourceSeqNum = sourceSeqNum
+                  Message = CompleteActivity(opId, value) }
+
+            try
+                let! ack =
+                    owned.Inbox
+                    |> S2.append
+                        [ S2.Record.textWith
+                              [ "src", completionSource; "seq", string sourceSeqNum ]
+                              (InboxEnvelopeCodec.encode envelope) ]
+
+                return Ok(ack, envelope)
+            with error ->
+                return
                     Error(
                         ActivityCommandAdapterStatus.Failed(
-                            ActivityCommandAdapterFailure.CompletionCommitFailed failure
+                            ActivityCommandAdapterFailure.CompletionPublishFailed error.Message
                         )
                     )
         }
@@ -86,80 +142,107 @@ module ActivityCommandAdapter =
             match log with
             | Error failure -> return ActivityCommandAdapterStatus.Failed failure
             | Ok decoded ->
-                let batch = DurableCommandDispatch.selectFromDecoded dispatcher maxRecords decoded
-                let history = decoded |> List.map snd |> DurableStepper.historyFromRecords
-                let commands = DispatchBatch.commands batch
+                let! published = readPublishedCompletions InboxEnvelopeCodec.decode owned
 
-                let rec loop history completed alreadyCompleted ignored remaining =
-                    async {
-                        match remaining with
-                        | [] ->
-                            let! checkpoint = DurableCommandDispatch.checkpoint encode dispatcher owned batch
+                match published with
+                | Error failure -> return ActivityCommandAdapterStatus.Failed failure
+                | Ok publishedSourceSeqNums ->
+                    let batch = DurableCommandDispatch.selectFromDecoded dispatcher maxRecords decoded
+                    let history = decoded |> List.map snd |> DurableStepper.historyFromRecords
+                    let commands = DispatchBatch.commands batch
 
-                            return
-                                match checkpoint with
-                                | CommandDispatchCheckpointResult.Deposed expected ->
-                                    ActivityCommandAdapterStatus.Deposed expected
-                                | CommandDispatchCheckpointResult.Failed failure ->
-                                    ActivityCommandAdapterStatus.Failed(
-                                        ActivityCommandAdapterFailure.CheckpointFailed failure
-                                    )
-                                | CommandDispatchCheckpointResult.Checkpointed _
-                                | CommandDispatchCheckpointResult.NotRequired ->
-                                    ActivityCommandAdapterStatus.Processed
-                                        { Batch = batch
-                                          Completed = List.rev completed
-                                          AlreadyCompleted = alreadyCompleted
-                                          Ignored = ignored
-                                          Checkpoint = checkpoint }
-                        | command :: rest ->
-                            match command.Command with
-                            | CallActivity(opId, activity) ->
-                                match History.completed opId history with
-                                | Some _ -> return! loop history completed (alreadyCompleted + 1) ignored rest
-                                | None ->
-                                    match ActivityRegistry.require activity.Name registry with
-                                    | Error(DurableRegistryError.ActivityNotFound name) ->
-                                        return
-                                            ActivityCommandAdapterStatus.Failed(
-                                                ActivityCommandAdapterFailure.MissingHandler name
-                                            )
-                                    | Error error ->
-                                        return
-                                            ActivityCommandAdapterStatus.Failed(
-                                                ActivityCommandAdapterFailure.HandlerFailed(
-                                                    ActivityName activity.Name,
-                                                    string error
+                    let rec loop published completed alreadyCompleted alreadyPublished ignored remaining =
+                        async {
+                            match remaining with
+                            | [] ->
+                                let! checkpoint = DurableCommandDispatch.checkpoint encode dispatcher owned batch
+
+                                return
+                                    match checkpoint with
+                                    | CommandDispatchCheckpointResult.Deposed expected ->
+                                        ActivityCommandAdapterStatus.Deposed expected
+                                    | CommandDispatchCheckpointResult.Failed failure ->
+                                        ActivityCommandAdapterStatus.Failed(
+                                            ActivityCommandAdapterFailure.CheckpointFailed failure
+                                        )
+                                    | CommandDispatchCheckpointResult.Checkpointed _
+                                    | CommandDispatchCheckpointResult.NotRequired ->
+                                        ActivityCommandAdapterStatus.Processed
+                                            { Batch = batch
+                                              Completed = List.rev completed
+                                              AlreadyCompleted = alreadyCompleted
+                                              AlreadyPublished = alreadyPublished
+                                              Ignored = ignored
+                                              Checkpoint = checkpoint }
+                            | command :: rest ->
+                                match command.Command with
+                                | CallActivity(opId, activity) ->
+                                    if History.completed opId history |> Option.isSome then
+                                        return!
+                                            loop
+                                                published
+                                                completed
+                                                (alreadyCompleted + 1)
+                                                alreadyPublished
+                                                ignored
+                                                rest
+                                    elif published |> Set.contains command.SourceSeqNum then
+                                        return!
+                                            loop
+                                                published
+                                                completed
+                                                alreadyCompleted
+                                                (alreadyPublished + 1)
+                                                ignored
+                                                rest
+                                    else
+                                        match ActivityRegistry.require activity.Name registry with
+                                        | Error(DurableRegistryError.ActivityNotFound name) ->
+                                            return
+                                                ActivityCommandAdapterStatus.Failed(
+                                                    ActivityCommandAdapterFailure.MissingHandler name
                                                 )
-                                            )
-                                    | Ok handler ->
-                                        let! handled = invokeHandler activity handler
+                                        | Error error ->
+                                            return
+                                                ActivityCommandAdapterStatus.Failed(
+                                                    ActivityCommandAdapterFailure.HandlerFailed(
+                                                        ActivityName activity.Name,
+                                                        string error
+                                                    )
+                                                )
+                                        | Ok handler ->
+                                            let! handled = invokeHandler activity handler
 
-                                        match handled with
-                                        | Error failure -> return ActivityCommandAdapterStatus.Failed failure
-                                        | Ok value ->
-                                            let! committed = commitCompletion encode owned opId value
+                                            match handled with
+                                            | Error failure -> return ActivityCommandAdapterStatus.Failed failure
+                                            | Ok value ->
+                                                let! publishedCompletion =
+                                                    publishCompletion owned command.SourceSeqNum opId value
 
-                                            match committed with
-                                            | Error status -> return status
-                                            | Ok(_, event) ->
-                                                let completion =
-                                                    { SourceSeqNum = command.SourceSeqNum
-                                                      OpId = opId
-                                                      Activity = activity
-                                                      Value = value }
+                                                match publishedCompletion with
+                                                | Error status -> return status
+                                                | Ok(ack, _) ->
+                                                    let completion =
+                                                        { SourceSeqNum = command.SourceSeqNum
+                                                          InboxSeqNum = ack.Start.SeqNum
+                                                          OpId = opId
+                                                          Activity = activity
+                                                          Value = value }
 
-                                                return!
-                                                    loop
-                                                        (History.append event history)
-                                                        (completion :: completed)
-                                                        alreadyCompleted
-                                                        ignored
-                                                        rest
-                            | ScheduleTimer _
-                            | CancelTimer _
-                            | WriteLog _ -> return! loop history completed alreadyCompleted (ignored + 1) rest
-                    }
+                                                    return!
+                                                        loop
+                                                            (published |> Set.add command.SourceSeqNum)
+                                                            (completion :: completed)
+                                                            alreadyCompleted
+                                                            alreadyPublished
+                                                            ignored
+                                                            rest
+                                | ScheduleTimer _
+                                | CancelTimer _
+                                | WriteLog _ ->
+                                    return!
+                                        loop published completed alreadyCompleted alreadyPublished (ignored + 1) rest
+                        }
 
-                return! loop history [] 0 0 commands
+                    return! loop publishedSourceSeqNums [] 0 0 0 commands
         }

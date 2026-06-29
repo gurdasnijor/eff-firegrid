@@ -3,6 +3,101 @@ namespace Eff.Foundation.Durable
 open System
 
 [<RequireQualifiedAccess>]
+module InboxEnvelopeCodec =
+    let private opText (OpId value) = string value
+
+    let private parseOp (text: string) =
+        match Int32.TryParse text with
+        | true, value -> Ok(OpId value)
+        | false, _ -> Error("bad op id: " + text)
+
+    let private parseInt64 name (text: string) =
+        match Int64.TryParse text with
+        | true, value -> Ok value
+        | false, _ -> Error("bad " + name + ": " + text)
+
+    let private field (value: string) = string value.Length + ":" + value
+
+    let private fields values =
+        values |> List.map field |> String.concat ""
+
+    let private readField (text: string) (index: int) =
+        let colon = text.IndexOf(':', index)
+
+        if colon < 0 then
+            Error "missing field length separator"
+        else
+            let lengthText = text.Substring(index, colon - index)
+
+            match Int32.TryParse lengthText with
+            | false, _ -> Error("bad field length: " + lengthText)
+            | true, length ->
+                if length < 0 then
+                    Error("negative field length: " + lengthText)
+                else
+                    let start = colon + 1
+                    let finish = start + length
+
+                    if finish > text.Length then
+                        Error "field length exceeds record body"
+                    else
+                        Ok(text.Substring(start, length), finish)
+
+    let private readFields count text index =
+        let rec loop remaining next acc =
+            if remaining = 0 then
+                if next = String.length text then
+                    Ok(List.rev acc)
+                else
+                    Error "trailing envelope data"
+            else
+                match readField text next with
+                | Ok(value, finish) -> loop (remaining - 1) finish (value :: acc)
+                | Error error -> Error error
+
+        loop count index []
+
+    let private workflowNameText (WorkflowName name) = name
+
+    let private messageFields =
+        function
+        | StartWorkflow(name, input) -> [ "start"; workflowNameText name; input ]
+        | RaiseSignal(name, payload) -> [ "signal"; name; payload ]
+        | CompleteActivity(opId, value) -> [ "activity-completed"; opText opId; value ]
+
+    let encode envelope =
+        fields (
+            envelope.Source
+            :: string envelope.SourceSeqNum
+            :: messageFields envelope.Message
+        )
+
+    let private decodeMessage =
+        function
+        | "start" :: workflowName :: input :: [] -> Ok(StartWorkflow(WorkflowName workflowName, input))
+        | "signal" :: name :: payload :: [] -> Ok(RaiseSignal(name, payload))
+        | "activity-completed" :: opId :: value :: [] ->
+            parseOp opId |> Result.map (fun id -> CompleteActivity(id, value))
+        | tag :: _ -> Error("unknown inbox message tag: " + tag)
+        | [] -> Error "missing inbox message tag"
+
+    let decode body =
+        readFields 5 body 0
+        |> Result.bind (function
+            | source :: sourceSeqNum :: messageFields ->
+                parseInt64 "source seq num" sourceSeqNum
+                |> Result.bind (fun seqNum ->
+                    if seqNum < 0L then
+                        Error("bad source seq num: " + sourceSeqNum)
+                    else
+                        decodeMessage messageFields
+                        |> Result.map (fun message ->
+                            { Source = source
+                              SourceSeqNum = seqNum
+                              Message = message }))
+            | _ -> Error "bad inbox envelope field count")
+
+[<RequireQualifiedAccess>]
 module StepRecordCodec =
     let private opText (OpId value) = string value
 

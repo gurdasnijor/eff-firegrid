@@ -19,11 +19,46 @@ type TraceVerifiers<'result>() =
     member _.Operation (name: string) (matchSpec: TraceOperationMatch) : Check<'result> =
         TraceProof.operation name matchSpec |> TraceProof.asCheck
 
+type HostVerifiers<'result>() =
+    member _.Started(hostName: string) : Check<'result> =
+        TraceExpect.spanExists
+            (sprintf "host '%s' started" hostName)
+            "verification.host.start"
+            [ "host.name", hostName ]
+
+    member _.Ready(hostName: string) : Check<'result> =
+        TraceExpect.spanExists
+            (sprintf "host '%s' became ready" hostName)
+            "verification.host.ready"
+            [ "host.name", hostName ]
+
+    member _.Stopped(hostName: string) : Check<'result> =
+        TraceExpect.spanExists (sprintf "host '%s' stopped" hostName) "verification.host.stop" [ "host.name", hostName ]
+
+type FaultVerifiers<'result>() =
+    member _.HostKilled(hostName: string) : Check<'result> =
+        TraceExpect.spanExists
+            (sprintf "host '%s' was killed" hostName)
+            "verification.host.kill"
+            [ "host.name", hostName; "verification.signal", "SIGKILL" ]
+
+    member _.HostKillAccepted(hostName: string) : Check<'result> =
+        TraceExpect.spanExists
+            (sprintf "host '%s' kill signal was accepted" hostName)
+            "verification.host.kill"
+            [ "host.name", hostName
+              "verification.signal", "SIGKILL"
+              "verification.accepted", "true" ]
+
 type Verifiers<'result> =
     { Expect: ExpectVerifiers<'result>
-      Trace: TraceVerifiers<'result> }
+      Trace: TraceVerifiers<'result>
+      Host: HostVerifiers<'result>
+      Fault: FaultVerifiers<'result> }
 
 module Verification =
     let verifiers<'result> () : Verifiers<'result> =
         { Expect = ExpectVerifiers<'result>()
-          Trace = TraceVerifiers<'result>() }
+          Trace = TraceVerifiers<'result>()
+          Host = HostVerifiers<'result>()
+          Fault = FaultVerifiers<'result>() }

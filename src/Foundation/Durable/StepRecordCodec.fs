@@ -80,12 +80,31 @@ module StepRecordCodec =
         | CancelTimer opId -> prefixed "command.cancel-timer" (fields [ opText opId ])
         | WriteLog(opId, message) -> prefixed "command.log" (fields [ opText opId; message ])
 
+    let private workflowNameText (WorkflowName name) = name
+
+    let private inboxMessageFields =
+        function
+        | StartWorkflow(name, input) -> "start" :: [ workflowNameText name; input ]
+        | RaiseSignal(name, payload) -> "signal" :: [ name; payload ]
+        | CompleteActivity(opId, value) -> "activity-completed" :: [ opText opId; value ]
+
+    let private inboxEnvelopeFields envelope =
+        envelope.Source
+        :: string envelope.SourceSeqNum
+        :: inboxMessageFields envelope.Message
+
+    let private inboxEnvelopePrefix envelope =
+        prefixed "inbox.accepted" (fields (inboxEnvelopeFields envelope))
+
     let private encodeStepRecord =
         function
         | HistoryEvent event -> eventPrefix event
         | Command command -> commandPrefix command
         | CommandDispatchCheckpoint(dispatcher, nextSeqNum) ->
             prefixed "dispatch.checkpoint" (fields [ dispatcher; string nextSeqNum ])
+        | InboxCheckpoint nextSeqNum -> prefixed "inbox.checkpoint" (fields [ string nextSeqNum ])
+        | InboxSourceHighwater(source, nextSeqNum) -> prefixed "inbox.highwater" (fields [ source; string nextSeqNum ])
+        | InboxMessageAccepted envelope -> inboxEnvelopePrefix envelope
 
     let encode =
         function
@@ -180,6 +199,31 @@ module StepRecordCodec =
                 | _ -> Error "bad command log field count")
         | _ -> Error("unknown command prefix: " + prefix)
 
+    let private decodeInboxMessage fields =
+        match fields with
+        | "start" :: workflowName :: input :: [] -> Ok(StartWorkflow(WorkflowName workflowName, input))
+        | "signal" :: name :: payload :: [] -> Ok(RaiseSignal(name, payload))
+        | "activity-completed" :: opId :: value :: [] ->
+            parseOp opId |> Result.map (fun id -> CompleteActivity(id, value))
+        | tag :: _ -> Error("unknown inbox message tag: " + tag)
+        | [] -> Error "missing inbox message tag"
+
+    let private decodeInboxEnvelope body start =
+        readFields 5 body start
+        |> Result.bind (function
+            | source :: sourceSeqNum :: messageFields ->
+                parseInt64 "source seq num" sourceSeqNum
+                |> Result.bind (fun seqNum ->
+                    if seqNum < 0L then
+                        Error("bad source seq num: " + sourceSeqNum)
+                    else
+                        decodeInboxMessage messageFields
+                        |> Result.map (fun message ->
+                            { Source = source
+                              SourceSeqNum = seqNum
+                              Message = message }))
+            | _ -> Error "bad inbox envelope field count")
+
     let private decodeStepRecord text =
         match splitPrefix text with
         | Error error -> Error error
@@ -198,6 +242,30 @@ module StepRecordCodec =
                         else
                             Ok(CommandDispatchCheckpoint(dispatcher, value)))
                 | _ -> Error "bad dispatch checkpoint field count")
+        | Ok(prefix, _, start) when prefix = "inbox.checkpoint" ->
+            readFields 1 text start
+            |> Result.bind (function
+                | [ nextSeqNum ] ->
+                    parseInt64 "next seq num" nextSeqNum
+                    |> Result.bind (fun value ->
+                        if value < 0L then
+                            Error("bad next seq num: " + nextSeqNum)
+                        else
+                            Ok(InboxCheckpoint value))
+                | _ -> Error "bad inbox checkpoint field count")
+        | Ok(prefix, _, start) when prefix = "inbox.highwater" ->
+            readFields 2 text start
+            |> Result.bind (function
+                | [ source; nextSeqNum ] ->
+                    parseInt64 "next seq num" nextSeqNum
+                    |> Result.bind (fun value ->
+                        if value < 0L then
+                            Error("bad next seq num: " + nextSeqNum)
+                        else
+                            Ok(InboxSourceHighwater(source, value)))
+                | _ -> Error "bad inbox highwater field count")
+        | Ok(prefix, _, start) when prefix = "inbox.accepted" ->
+            decodeInboxEnvelope text start |> Result.map InboxMessageAccepted
         | Ok(prefix, _, _) -> Error("unknown step record prefix: " + prefix)
 
     let decode (body: string) =

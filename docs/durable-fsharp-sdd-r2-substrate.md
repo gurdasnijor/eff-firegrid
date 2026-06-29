@@ -92,12 +92,23 @@ Implemented slices:
   ordering, retry suppression after completion, missing-handler failure without
   checkpointing, non-activity command skipping, and stale-owner checkpoint
   rejection.
+- **Tier 2.6 inbox fold.**
+  `InboxFold.runOnce` admits fresh `{key}/in` arrivals into the fenced log. The
+  inbox body shape is `InboxEnvelope`, carrying source id, source sequence
+  number, and a `StartWorkflow`, `RaiseSignal`, or `CompleteActivity` message.
+  The fold reconstructs its inbox cursor and per-source highwater from log
+  records, commits accepted arrivals plus `InboxCheckpoint` in one fenced
+  append, and converts `CompleteActivity` arrivals into
+  `ActivityCompleted` history events. The compiled proof covers activity
+  completion admission, cursor reconstruction after restart, source-message
+  dedup, fail-closed malformed inbox decoding, stale-owner rejection, and inbox
+  envelope codec round-trip.
 
 Next slices, still one layer + proof at a time:
 
-- add the concrete inbox fold: admit start, signal, and activity-completion
-  arrivals from `{key}/in` into the fenced log with source-sequence provenance
-  and destination-side dedup, without yet building a broad scheduler.
+- thread the activity adapter through `{key}/in`: have activity completion
+  publication target the inbox envelope shape and prove host + adapter + inbox
+  fold can complete a two-activity workflow one narrow tick at a time.
 
 One surprising constraint surfaced from your own code — see §1.
 

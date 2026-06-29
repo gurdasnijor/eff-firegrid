@@ -8,10 +8,23 @@ type StepCommand =
     | CancelTimer of OpId
     | WriteLog of OpId * message: string
 
+type InboxMessage =
+    | StartWorkflow of WorkflowName * Payload
+    | RaiseSignal of name: string * payload: Payload
+    | CompleteActivity of OpId * Payload
+
+type InboxEnvelope =
+    { Source: string
+      SourceSeqNum: int64
+      Message: InboxMessage }
+
 type StepRecord =
     | HistoryEvent of Event
     | Command of StepCommand
     | CommandDispatchCheckpoint of dispatcher: string * nextSeqNum: int64
+    | InboxCheckpoint of nextSeqNum: int64
+    | InboxSourceHighwater of source: string * nextSeqNum: int64
+    | InboxMessageAccepted of InboxEnvelope
 
 type StepPlan<'a> =
     | Complete of 'a

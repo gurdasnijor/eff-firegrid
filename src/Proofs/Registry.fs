@@ -11,4 +11,5 @@ module Registry =
           DurableHostProof.proof
           DurableCommandDispatchProof.proof
           DurableRegistryProof.proof
-          DurableActivityAdapterProof.proof ]
+          DurableActivityAdapterProof.proof
+          DurableInboxFoldProof.proof ]

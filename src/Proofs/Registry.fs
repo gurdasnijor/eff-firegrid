@@ -4,4 +4,5 @@ module Registry =
     let all: ProofSpec list =
         [ FoundationSubjectHistoryProof.proof
           FoundationStateViewProof.proof
+          FoundationKvStoreProof.proof
           DurableSemanticsProof.proof ]

@@ -32,6 +32,9 @@ Current implementation on `main` and the ergonomic proof-runner branch:
   the workload boundary
 - CLI path through `proofs run`, `proofs list`, and `npm run proofs -- --proof <filter>`
 - current durable replay checks migrated out of `Harness.fs` into one property
+- foundational `SubjectHistory` proof registered as
+  `foundation.subject-history`, using `s2Lite` and production
+  `src/Foundation/SubjectHistory.fs`
 
 Still pending from Milestone 1:
 

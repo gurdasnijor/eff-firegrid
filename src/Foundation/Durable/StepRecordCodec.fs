@@ -84,7 +84,8 @@ module StepRecordCodec =
         function
         | HistoryEvent event -> eventPrefix event
         | Command command -> commandPrefix command
-        | CommandDispatchCheckpoint nextSeqNum -> prefixed "dispatch.checkpoint" (fields [ string nextSeqNum ])
+        | CommandDispatchCheckpoint(dispatcher, nextSeqNum) ->
+            prefixed "dispatch.checkpoint" (fields [ dispatcher; string nextSeqNum ])
 
     let encode =
         function
@@ -187,15 +188,15 @@ module StepRecordCodec =
         | Ok(prefix, _, start) when prefix.StartsWith("command.", StringComparison.Ordinal) ->
             decodeCommand prefix text start |> Result.map Command
         | Ok(prefix, _, start) when prefix = "dispatch.checkpoint" ->
-            readFields 1 text start
+            readFields 2 text start
             |> Result.bind (function
-                | [ nextSeqNum ] ->
+                | [ dispatcher; nextSeqNum ] ->
                     parseInt64 "next seq num" nextSeqNum
                     |> Result.bind (fun value ->
                         if value < 0L then
                             Error("bad next seq num: " + nextSeqNum)
                         else
-                            Ok(CommandDispatchCheckpoint value))
+                            Ok(CommandDispatchCheckpoint(dispatcher, value)))
                 | _ -> Error "bad dispatch checkpoint field count")
         | Ok(prefix, _, _) -> Error("unknown step record prefix: " + prefix)
 

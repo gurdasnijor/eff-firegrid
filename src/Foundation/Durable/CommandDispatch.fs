@@ -38,10 +38,13 @@ module DispatchBatch =
 
 [<RequireQualifiedAccess>]
 module DurableCommandDispatch =
-    let private dispatchCursor decoded =
+    let private dispatchCursor dispatcher decoded =
         decoded
         |> List.choose (function
-            | seqNum, Incoming(CommandDispatchCheckpoint nextSeqNum) -> Some(max nextSeqNum (seqNum + 1L))
+            | seqNum, Incoming(CommandDispatchCheckpoint(checkpointDispatcher, nextSeqNum)) when
+                checkpointDispatcher = dispatcher
+                ->
+                Some(max nextSeqNum (seqNum + 1L))
             | _ -> None)
         |> List.fold max 0L
 
@@ -54,11 +57,11 @@ module DurableCommandDispatch =
 
         loop [] decoded
 
-    let selectFromDecoded maxRecords decoded =
+    let selectFromDecoded dispatcher maxRecords decoded =
         if maxRecords <= 0 then
             invalidArg (nameof maxRecords) "maxRecords must be positive"
 
-        let fromSeqNum = dispatchCursor decoded
+        let fromSeqNum = dispatchCursor dispatcher decoded
 
         let scanned =
             decoded
@@ -84,24 +87,24 @@ module DurableCommandDispatch =
           Scanned = List.length scanned
           Commands = commands }
 
-    let trySelect maxRecords decoded =
-        decodeLog decoded |> Result.map (selectFromDecoded maxRecords)
+    let trySelect dispatcher maxRecords decoded =
+        decodeLog decoded |> Result.map (selectFromDecoded dispatcher maxRecords)
 
-    let readPending decode maxRecords owned =
+    let readPending decode dispatcher maxRecords owned =
         async {
             try
                 let! decoded = S2Substrate.readLogText decode owned
-                return trySelect maxRecords decoded
+                return trySelect dispatcher maxRecords decoded
             with error ->
                 return Error(CommandDispatchFailure.LogReadFailed error.Message)
         }
 
-    let checkpoint encode owned batch =
+    let checkpoint encode dispatcher owned batch =
         async {
             if batch.NextSeqNum <= batch.FromSeqNum then
                 return CommandDispatchCheckpointResult.NotRequired
             else
-                let checkpoint = Incoming(CommandDispatchCheckpoint batch.NextSeqNum)
+                let checkpoint = Incoming(CommandDispatchCheckpoint(dispatcher, batch.NextSeqNum))
                 let! result = S2Substrate.commitText encode [ checkpoint ] owned
 
                 return

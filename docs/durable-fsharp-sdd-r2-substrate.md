@@ -72,20 +72,32 @@ Implemented slices:
 - **Tier 2.4 durable command dispatch boundary.**
   `DurableCommandDispatch` scans committed log records, selects only
   `Outgoing(Command _)` records with their source sequence numbers, and writes
-  a fenced `CommandDispatchCheckpoint` record after a caller has processed the
-  scanned batch. The checkpoint cursor is reconstructed from the durable log,
-  so a restarted dispatcher does not reselect already-checkpointed commands.
+  a fenced dispatcher-scoped `CommandDispatchCheckpoint` record after a caller
+  has processed the scanned batch. The checkpoint cursor is reconstructed from
+  the durable log per dispatcher, so a restarted activity adapter does not
+  reselect already-checkpointed activity work and cannot advance a future timer
+  adapter's cursor.
   This is still not an activity worker, timer service, or daemon scheduler; it
   is the typed outbox boundary those adapters will sit on. The compiled proof
   covers command-only selection, batch-limit cursor advancement, fail-closed
-  decode behavior, checkpoint codec round-trip, duplicate suppression after an
-  S2 checkpoint, and stale-owner checkpoint rejection.
+  decode behavior, checkpoint codec round-trip, dispatcher-scoped cursors,
+  duplicate suppression after an S2 checkpoint, and stale-owner checkpoint
+  rejection.
+- **Tier 2.5 activity command adapter.**
+  `ActivityCommandAdapter.runOnce` processes the `"activity"` dispatch cursor:
+  it invokes registered handlers only for committed `CallActivity` commands,
+  commits `ActivityCompleted` records under the owner fence, and checkpoints the
+  activity dispatcher only after durable completion admission. The compiled
+  proof covers committed-command invocation, completion-before-checkpoint
+  ordering, retry suppression after completion, missing-handler failure without
+  checkpointing, non-activity command skipping, and stale-owner checkpoint
+  rejection.
 
 Next slices, still one layer + proof at a time:
 
-- add the first command adapter boundary: turn `CallActivity` commands into a
-  durable activity inbox message shape with source-sequence provenance and
-  destination-side dedup, without yet building a broad scheduler.
+- add the concrete inbox fold: admit start, signal, and activity-completion
+  arrivals from `{key}/in` into the fenced log with source-sequence provenance
+  and destination-side dedup, without yet building a broad scheduler.
 
 One surprising constraint surfaced from your own code — see §1.
 

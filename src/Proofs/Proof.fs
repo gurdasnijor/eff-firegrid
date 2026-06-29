@@ -87,12 +87,21 @@ module ProofOperationOptions =
           OperationId = None
           Key = None }
 
+type FaultEvent =
+    { FaultId: string
+      Kind: string
+      Target: string
+      Signal: string option
+      Accepted: bool option
+      OperationIndex: int }
+
 type CompletedTrial<'result> =
     { ProofName: string
       PropertyName: string
       TrialId: string
       Result: Result<'result, string>
-      Traces: TraceStore }
+      Traces: TraceStore
+      Faults: FaultEvent list }
 
 type Check<'result> =
     { Name: string
@@ -127,6 +136,7 @@ type NegativeControlReport =
       Passed: bool
       ExpectedFailure: string option
       FailedChecks: string list
+      Faults: FaultEvent list
       Message: string option }
 
 type PropertyReport =
@@ -135,8 +145,10 @@ type PropertyReport =
       TrialId: string
       Passed: bool
       WorkloadFailed: bool
+      Faults: FaultEvent list
       Checks: CheckReport list
       NegativeControls: NegativeControlReport list
+      ReplayCommand: string
       ReportPath: string }
 
 type RunnerConfig =

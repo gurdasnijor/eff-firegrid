@@ -73,6 +73,21 @@ module Reports =
         }
 
     let writePropertyReport (report: PropertyReport) =
+        let faultEvents (faults: FaultEvent list) =
+            faults
+            |> List.map (fun fault ->
+                createObj
+                    [ "faultId" ==> fault.FaultId
+                      "kind" ==> fault.Kind
+                      "target" ==> fault.Target
+                      "signal" ==> Option.toObj fault.Signal
+                      "accepted"
+                      ==> match fault.Accepted with
+                          | Some accepted -> box accepted
+                          | None -> null
+                      "operationIndex" ==> fault.OperationIndex ])
+            |> List.toArray
+
         let checks =
             report.Checks
             |> List.map (fun check ->
@@ -90,6 +105,7 @@ module Reports =
                       "passed" ==> control.Passed
                       "expectedFailure" ==> Option.toObj control.ExpectedFailure
                       "failedChecks" ==> List.toArray control.FailedChecks
+                      "faults" ==> faultEvents control.Faults
                       "message" ==> Option.toObj control.Message ])
             |> List.toArray
 
@@ -100,8 +116,10 @@ module Reports =
                   "trialId" ==> report.TrialId
                   "status" ==> if report.Passed then "passed" else "failed"
                   "workloadFailed" ==> report.WorkloadFailed
+                  "faults" ==> faultEvents report.Faults
                   "checks" ==> checks
                   "negativeControls" ==> negativeControls
+                  "replayCommand" ==> report.ReplayCommand
                   "reportPath" ==> report.ReportPath ]
 
         ensureDir (dirname path report.ReportPath)

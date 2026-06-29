@@ -49,11 +49,18 @@ Implemented slices:
   streams for `{key}/log` + `{key}/in` provisioning, fence claims, fenced
   commits, replay that ignores fence command records, stale-owner rejection,
   inbox append/read, and relay of `Outgoing` log entries.
+- **Tier 2.2 durable stepper.**
+  `DurableStepper.plan` translates blocked replay `Need`s into idempotent
+  `HistoryEntry<StepRecord>` commits: activity calls, timer creation,
+  cancellation, deterministic time, replay-safe logging, and associated
+  commands. The compiled proof covers duplicate suppression and a real fenced
+  S2 commit/readback path.
 
 Next slices, still one layer + proof at a time:
 
-- add the first durable stepper that translates `Durable.replay` `Need`s into
-  fenced S2 log commits and inbox-facing delivery records.
+- add the first host loop that repeatedly reads `{key}/log`, runs
+  `DurableStepper.plan`, commits under the fence, and stops cleanly when
+  deposed.
 
 One surprising constraint surfaced from your own code — see §1.
 

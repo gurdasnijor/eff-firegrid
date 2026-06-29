@@ -11,17 +11,27 @@ type EventKey =
     | Timer of deadline: int64
     | Signal of name: string
 
+type RaceTask =
+    | RaceActivity of Activity
+    | RaceEvent of EventKey
+
+type RaceResult =
+    | ActivityWon of index: int * value: Value
+    | EventWon of index: int * key: EventKey * value: Value
+
 type Durable<'a> =
     | Return of 'a
     | Perform of Activity * k: (Value -> Durable<'a>)
     | PerformAll of Activity list * k: (Value list -> Durable<'a>)
     | Await of EventKey * k: (Value -> Durable<'a>)
+    | WhenAny of RaceTask list * k: (RaceResult -> Durable<'a>)
 
 type Event =
     | ActivityCalled of OpId * Activity
     | ActivityCompleted of OpId * Value
     | TimerCreated of OpId * deadline: int64
     | TimerFired of OpId
+    | TimerCanceled of OpId
     | SignalReceived of OpId * name: string * payload: Value
 
 type History = private History of Event list
@@ -30,6 +40,8 @@ type Need =
     | NeedsActivity of Activity
     | NeedsActivities of (OpId * Activity) list
     | NeedsEvent of EventKey
+    | NeedsRace of (OpId * RaceTask) list
+    | NeedsTimerCancellation of OpId list
 
 type Outcome<'a> =
     | Done of 'a
@@ -72,6 +84,25 @@ module History =
                 | SignalReceived(id, signalName, payload) when id = opId && signalName = name -> Some payload
                 | _ -> None)
 
+    let timerCanceled opId (History events) =
+        events
+        |> List.exists (function
+            | TimerCanceled id when id = opId -> true
+            | _ -> false)
+
+    let raceWinner (tasks: (int * OpId * RaceTask) list) (History events) =
+        let tryMatch event =
+            tasks
+            |> List.tryPick (fun (index, opId, task) ->
+                match task, event with
+                | RaceActivity _, ActivityCompleted(id, value) when id = opId -> Some(ActivityWon(index, value))
+                | RaceEvent(Timer deadline), TimerFired id when id = opId -> Some(EventWon(index, Timer deadline, ""))
+                | RaceEvent(Signal name), SignalReceived(id, signalName, payload) when id = opId && signalName = name ->
+                    Some(EventWon(index, Signal name, payload))
+                | _ -> None)
+
+        events |> List.tryPick tryMatch
+
 [<RequireQualifiedAccess>]
 module Durable =
     let result value = Return value
@@ -83,6 +114,7 @@ module Durable =
             | Perform(activity, k) -> Perform(activity, k >> loop)
             | PerformAll(activities, k) -> PerformAll(activities, k >> loop)
             | Await(key, k) -> Await(key, k >> loop)
+            | WhenAny(tasks, k) -> WhenAny(tasks, k >> loop)
 
         loop program
 
@@ -93,6 +125,8 @@ module Durable =
     let performAll activities = PerformAll(activities, Return)
 
     let await key = Await(key, Return)
+
+    let whenAny tasks = WhenAny(tasks, Return)
 
     let replay history program =
         let rec loop opId current =
@@ -126,5 +160,33 @@ module Durable =
                 match History.resolved opId key history with
                 | Some value -> loop (OpId.next opId) (k value)
                 | None -> Blocked(opId, NeedsEvent key)
+            | WhenAny(tasks, k) ->
+                let pending =
+                    tasks |> List.mapi (fun index task -> index, OpId.add index opId, task)
+
+                match History.raceWinner pending history with
+                | None ->
+                    pending
+                    |> List.map (fun (_, id, task) -> id, task)
+                    |> NeedsRace
+                    |> fun need -> Blocked(opId, need)
+                | Some winner ->
+                    let winnerIndex =
+                        match winner with
+                        | ActivityWon(index, _) -> index
+                        | EventWon(index, _, _) -> index
+
+                    let uncanceledTimers =
+                        pending
+                        |> List.choose (fun (index, id, task) ->
+                            match task with
+                            | RaceEvent(Timer _) when index <> winnerIndex && not (History.timerCanceled id history) ->
+                                Some id
+                            | _ -> None)
+
+                    if List.isEmpty uncanceledTimers then
+                        loop (OpId.add tasks.Length opId) (k winner)
+                    else
+                        Blocked(opId, NeedsTimerCancellation uncanceledTimers)
 
         loop OpId.zero program

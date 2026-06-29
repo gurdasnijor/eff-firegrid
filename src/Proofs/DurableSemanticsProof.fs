@@ -7,6 +7,7 @@ module DurableSemanticsProof =
         { ActivityReplay: bool
           EventReplay: bool
           FanOutReplay: bool
+          WhenAnyReplay: bool
           ReplayLaws: bool
           SubstrateNaming: bool }
 
@@ -18,6 +19,13 @@ module DurableSemanticsProof =
             |> List.map (fun (id, activity) -> ActivityCompleted(id, "done:" + activity.Name))
         | NeedsEvent(Timer _) -> [ TimerFired opId ]
         | NeedsEvent(Signal name) -> [ SignalReceived(opId, name, "sig:" + name) ]
+        | NeedsRace pending ->
+            match pending with
+            | (id, RaceActivity activity) :: _ -> [ ActivityCompleted(id, "done:" + activity.Name) ]
+            | (id, RaceEvent(Timer _)) :: _ -> [ TimerFired id ]
+            | (id, RaceEvent(Signal name)) :: _ -> [ SignalReceived(id, name, "sig:" + name) ]
+            | [] -> []
+        | NeedsTimerCancellation timers -> timers |> List.map TimerCanceled
 
     let private drive (start: History) (program: Durable<string>) : string * History =
         let rec loop history =
@@ -50,7 +58,15 @@ module DurableSemanticsProof =
           "signal then activity",
           Durable.await (Signal "approved")
           |> Durable.bind (fun s -> Durable.perform { Name = "act"; Input = s })
-          |> Durable.bind (fun r -> Durable.result ("final:" + r)) ]
+          |> Durable.bind (fun r -> Durable.result ("final:" + r))
+
+          "when-any signal or timeout",
+          Durable.whenAny [ RaceEvent(Signal "approved"); RaceEvent(Timer 1000L) ]
+          |> Durable.bind (fun winner ->
+              match winner with
+              | EventWon(0, Signal "approved", value) -> Durable.result ("approved:" + value)
+              | EventWon(1, Timer _, _) -> Durable.result "timeout"
+              | _ -> Durable.result "unexpected") ]
 
     let private replayLawsHold (program: Durable<string>) =
         let result, full = drive History.empty program
@@ -160,6 +176,90 @@ module DurableSemanticsProof =
 
         dispatches && partialReplaysMissing && preservesSourceOrder
 
+    let private checkWhenAnyReplay () =
+        let phoneVerification =
+            Durable.whenAny [ RaceEvent(Signal "approved"); RaceEvent(Timer 5000L) ]
+            |> Durable.bind (fun winner ->
+                match winner with
+                | EventWon(0, Signal "approved", payload) -> Durable.result ("approved:" + payload)
+                | EventWon(1, Timer _, _) -> Durable.result "timeout"
+                | _ -> Durable.result "unexpected")
+
+        let dispatchesRace =
+            match Durable.replay History.empty phoneVerification with
+            | Blocked(OpId 0, NeedsRace pending) ->
+                pending = [ OpId 0, RaceEvent(Signal "approved"); OpId 1, RaceEvent(Timer 5000L) ]
+            | _ -> false
+
+        let signalWinRequiresTimerCancel =
+            let signaled =
+                History.empty |> History.append (SignalReceived(OpId 0, "approved", "yes"))
+
+            match Durable.replay signaled phoneVerification with
+            | Blocked(OpId 0, NeedsTimerCancellation [ OpId 1 ]) -> true
+            | _ -> false
+
+        let signalWinAfterTimerCancel =
+            let history =
+                History.empty
+                |> History.append (SignalReceived(OpId 0, "approved", "yes"))
+                |> History.append (TimerCanceled(OpId 1))
+
+            match Durable.replay history phoneVerification with
+            | Done value -> value = "approved:yes"
+            | _ -> false
+
+        let timerWin =
+            let history = History.empty |> History.append (TimerFired(OpId 1))
+
+            match Durable.replay history phoneVerification with
+            | Done value -> value = "timeout"
+            | _ -> false
+
+        let earliestHistoryEventWins =
+            let history =
+                History.empty
+                |> History.append (TimerFired(OpId 1))
+                |> History.append (SignalReceived(OpId 0, "approved", "late"))
+
+            match Durable.replay history phoneVerification with
+            | Done value -> value = "timeout"
+            | _ -> false
+
+        let activityWinCancelsTimer =
+            let program =
+                Durable.whenAny [ RaceActivity { Name = "call-phone"; Input = "555" }; RaceEvent(Timer 30L) ]
+                |> Durable.bind (fun winner ->
+                    match winner with
+                    | ActivityWon(0, value) -> Durable.result ("activity:" + value)
+                    | EventWon(1, Timer _, _) -> Durable.result "timeout"
+                    | _ -> Durable.result "unexpected")
+
+            let activityCompleted =
+                History.empty |> History.append (ActivityCompleted(OpId 0, "ok"))
+
+            let cancellationRequested =
+                match Durable.replay activityCompleted program with
+                | Blocked(OpId 0, NeedsTimerCancellation [ OpId 1 ]) -> true
+                | _ -> false
+
+            let completed =
+                activityCompleted
+                |> History.append (TimerCanceled(OpId 1))
+                |> fun history ->
+                    match Durable.replay history program with
+                    | Done value -> value = "activity:ok"
+                    | _ -> false
+
+            cancellationRequested && completed
+
+        dispatchesRace
+        && signalWinRequiresTimerCancel
+        && signalWinAfterTimerCancel
+        && timerWin
+        && earliestHistoryEventWins
+        && activityWinCancelsTimer
+
     let private runWorkload ctx =
         ProofOperation.run
             ctx
@@ -172,6 +272,7 @@ module DurableSemanticsProof =
                     { ActivityReplay = checkActivityReplay ()
                       EventReplay = checkEventReplay ()
                       FanOutReplay = checkFanOutReplay ()
+                      WhenAnyReplay = checkWhenAnyReplay ()
                       ReplayLaws = programs |> List.forall (snd >> replayLawsHold)
                       SubstrateNaming =
                         let key = StorageKey "orders/123"
@@ -184,7 +285,8 @@ module DurableSemanticsProof =
                         "proof.durable_semantics.completed"
                         [ "proof.property", "durable-semantics-tier1"
                           "proof.activity_replay", string result.ActivityReplay
-                          "proof.fan_out", string result.FanOutReplay ]
+                          "proof.fan_out", string result.FanOutReplay
+                          "proof.when_any", string result.WhenAnyReplay ]
 
                 return result
             })
@@ -201,6 +303,7 @@ module DurableSemanticsProof =
                     { ActivityReplay = true
                       EventReplay = true
                       FanOutReplay = true
+                      WhenAnyReplay = true
                       ReplayLaws = false
                       SubstrateNaming = true }
             })
@@ -223,6 +326,7 @@ module DurableSemanticsProof =
                 [ v.Expect.Workload "activity replay" (fun result -> result.ActivityReplay)
                   v.Expect.Workload "event replay" (fun result -> result.EventReplay)
                   v.Expect.Workload "fan-out/fan-in replay" (fun result -> result.FanOutReplay)
+                  v.Expect.Workload "when-any replay" (fun result -> result.WhenAnyReplay)
                   v.Expect.Workload "replay laws" (fun result -> result.ReplayLaws)
                   v.Expect.Workload "substrate naming" (fun result -> result.SubstrateNaming)
                   v.Trace.SpanExists
@@ -233,7 +337,7 @@ module DurableSemanticsProof =
                       "durable operation was recorded"
                       ({ TraceOperationMatch.named "durable.replay.laws" with
                           Status = Some "ok"
-                          OutputContains = [ "ActivityReplay"; "ReplayLaws" ]
+                          OutputContains = [ "ActivityReplay"; "WhenAnyReplay"; "ReplayLaws" ]
                           Count = Some 1 }) ])
 
             negativeControl brokenReplayLawControl

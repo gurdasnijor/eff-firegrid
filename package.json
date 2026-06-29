@@ -14,6 +14,7 @@
     "play": "dotnet run --project tools/repo/Build.fsproj -- --target Play",
     "watch": "dotnet fable watch repl.fsx --outDir build --runScript",
     "script:subject-history": "dotnet run --project tools/repo/Build.fsproj -- --target ScriptSubjectHistory",
+    "proofs": "dotnet run --project tools/repo/Build.fsproj -- --target Proofs",
     "test": "dotnet run --project tools/repo/Build.fsproj -- --target Test",
     "format": "dotnet run --project tools/repo/Build.fsproj -- --target Format",
     "format:check": "dotnet run --project tools/repo/Build.fsproj -- --target FormatCheck",

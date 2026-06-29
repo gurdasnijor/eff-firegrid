@@ -1,6 +1,38 @@
-// eff-firegrid — F#/Fable bindings for the S2 (s2.dev) streaming SDK.
-//
-// The reusable client lives in src/S2/ (Interop.fs + Client.fs).
-// The interactive playground lives in repl.fsx — run it with:
-//   npm run play      (or: dotnet fable repl.fsx --outDir build --runScript)
-printfn "eff-firegrid — see repl.fsx for the S2 playground"
+namespace Eff
+
+open Eff.Proofs
+
+module Program =
+    let private usage () =
+        printfn "eff-firegrid"
+        printfn ""
+        printfn "Commands:"
+        printfn "  proofs list               List registered proof names"
+        printfn "  proofs run [--proof name] Run the compiled validation proof suite"
+
+    let private listProofs () = Runner.listProofs Registry.all
+
+    let rec private parseRunArgs config args =
+        match args with
+        | [] -> config
+        | "--proof" :: value :: rest -> parseRunArgs { config with ProofFilter = Some value } rest
+        | "--trial-id" :: value :: rest -> parseRunArgs { config with TrialId = Some value } rest
+        | "--preserve" :: rest -> parseRunArgs { config with Preserve = true } rest
+        | "--seed" :: value :: rest -> parseRunArgs { config with Seed = int value } rest
+        | _ :: rest -> parseRunArgs config rest
+
+    [<EntryPoint>]
+    let main argv =
+        match argv |> Array.toList with
+        | "proofs" :: "list" :: _ ->
+            listProofs ()
+            0
+        | "proofs" :: "run" :: args ->
+            Runner.run (parseRunArgs Runner.defaultConfig args) Registry.all
+            0
+        | "proofs" :: args ->
+            Runner.run (parseRunArgs Runner.defaultConfig args) Registry.all
+            0
+        | _ ->
+            usage ()
+            0

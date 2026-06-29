@@ -17,6 +17,7 @@
 #load "../src/Proofs/Proof.fs"
 #load "../src/Proofs/Reports.fs"
 #load "../src/Proofs/S2Lite.fs"
+#load "../src/Proofs/ProcessHost.fs"
 #load "../src/Proofs/TraceSql.fs"
 #load "../src/Proofs/TraceProof.fs"
 #load "../src/Proofs/Expect.fs"
@@ -50,6 +51,9 @@ let pathJoin (_path: obj) (_left: string) (_right: string) : string = jsNative
 
 [<Emit("$0.writeFileSync($1, $2, 'utf8')")>]
 let writeFileSync (_fs: obj) (_path: string) (_content: string) : unit = jsNative
+
+[<Emit("fetch($0).then(r => r.text())")>]
+let fetchText (_url: string) : JS.Promise<string> = jsNative
 
 [<Emit("$0.rmSync($1, { recursive: true, force: true })")>]
 let rmSync (_fs: obj) (_path: string) : unit = jsNative
@@ -263,6 +267,101 @@ let suite =
                                 "resource-proof"
 
                         check "duplicate S2 resources are rejected" duplicateReport.WorkloadFailed
+                    finally
+                        rmSync fs root
+                })
+
+        do!
+            test
+                "proof resources: processHost starts and stops"
+                (async {
+                    let root = mkdtempSync fs (pathJoin path (tmpdir os) "eff-firegrid-proof-runner-")
+                    let port = 41000 + counter
+                    counter <- counter + 1
+                    let readyUrl = sprintf "http://127.0.0.1:%d/ready" port
+                    let echoUrl = sprintf "http://127.0.0.1:%d/echo" port
+
+                    let script =
+                        "const http = require('node:http');"
+                        + "const port = Number(process.env.HOST_PORT);"
+                        + "const body = process.env.FIREGRID_HOST_ID + ':' + process.env.FIREGRID_TRIAL_ID;"
+                        + "const server = http.createServer((req, res) => {"
+                        + "if (req.url === '/ready') { res.writeHead(200); res.end('ready'); return; }"
+                        + "if (req.url === '/echo') { res.writeHead(200); res.end(body); return; }"
+                        + "res.writeHead(404); res.end('missing');"
+                        + "});"
+                        + "server.listen(port, '127.0.0.1');"
+                        + "process.on('SIGTERM', () => server.close(() => process.exit(0)));"
+
+                    try
+                        let hostSpec =
+                            { ProcessHostSpec.create "host-a" "node" with
+                                Args = [ "-e"; script ]
+                                Env = [ "HOST_PORT", string port ]
+                                ReadinessUrl = Some readyUrl
+                                ReadinessAttempts = Some 40
+                                ReadinessIntervalMillis = Some 50 }
+
+                        let hostProperty =
+                            property "process-host-resource" {
+                                processHost hostSpec
+
+                                workload (fun ctx ->
+                                    async {
+                                        let host = WorkloadContext.requireHost "host-a" ctx
+                                        let! body = fetchText echoUrl |> Async.AwaitPromise
+
+                                        return
+                                            host.Name = "host-a"
+                                            && host.ProcessId > 0
+                                            && body = "host-a:" + ctx.TrialId
+                                    })
+
+                                verify (fun v ->
+                                    [ v.Expect.WorkloadResult "host responded" true
+                                      v.Trace.SpanExists
+                                          "host start span emitted"
+                                          "verification.host.start"
+                                          [ "host.name", "host-a" ]
+                                      v.Trace.SpanExists
+                                          "host ready span emitted"
+                                          "verification.host.ready"
+                                          [ "host.name", "host-a" ]
+                                      v.Trace.SpanExists
+                                          "host stop span emitted"
+                                          "verification.host.stop"
+                                          [ "host.name", "host-a" ] ])
+                            }
+
+                        let! report =
+                            hostProperty.RunProperty
+                                { Root = root
+                                  ProofFilter = None
+                                  TrialId = Some "process-host-resource-trial"
+                                  Preserve = false
+                                  Seed = 1 }
+                                "resource-proof"
+
+                        check "processHost property passes" report.Passed
+
+                        let duplicateHost =
+                            property "duplicate-process-host" {
+                                processHost hostSpec
+                                processHost hostSpec
+                                workload (fun _ -> async { return true })
+                                verify (fun v -> [ v.Expect.WorkloadResult "ok" true ])
+                            }
+
+                        let! duplicateReport =
+                            duplicateHost.RunProperty
+                                { Root = root
+                                  ProofFilter = None
+                                  TrialId = Some "duplicate-process-host-trial"
+                                  Preserve = false
+                                  Seed = 1 }
+                                "resource-proof"
+
+                        check "duplicate processHost names are rejected" duplicateReport.WorkloadFailed
                     finally
                         rmSync fs root
                 })

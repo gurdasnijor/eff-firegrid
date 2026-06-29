@@ -1,5 +1,7 @@
 namespace Eff.Proofs
 
+open Eff
+
 module Property =
     type NegativeControlDraft<'result> =
         { Workload: (WorkloadContext -> Async<'result>) option
@@ -12,6 +14,8 @@ module Property =
           Verifiers: Check<'result> list
           NegativeControls: NegativeControlSpec<'result> list
           RequiresNegativeControl: bool }
+
+    type ResolvedResources = { S2: S2LiveResource option }
 
     let private unsupportedResources resources =
         resources
@@ -51,7 +55,26 @@ module Property =
             return List.ofSeq reports
         }
 
-    let private workloadContext (trialId: string) (seed: int) (store: TraceStore) =
+    let private emptyResources = { S2 = None }
+
+    let private resolveResources (store: TraceStore) resources =
+        async {
+            let mutable resolved = emptyResources
+
+            for resource in resources do
+                match resource with
+                | S2LiveFromEnv ->
+                    let s2 = { Client = S2Cli.connect () }
+                    resolved <- { resolved with S2 = Some s2 }
+
+                    do! Reports.emitSpan store "verification.s2.live.connected" [ "resource.kind", "s2LiveFromEnv" ]
+                | S2Lite _ -> ()
+                | ProcessHost _ -> ()
+
+            return resolved
+        }
+
+    let private workloadContext (trialId: string) (seed: int) (store: TraceStore) (resources: ResolvedResources) =
         let nextOperation =
             let counter = ref 0
 
@@ -63,6 +86,7 @@ module Property =
           Root = store.Root
           Traces = store
           Seed = seed
+          S2 = resources.S2
           NextOperationId = nextOperation
           EmitSpan = Reports.emitSpan store }
 
@@ -72,6 +96,7 @@ module Property =
         (root: string)
         (seed: int)
         (positiveWorkload: WorkloadContext -> Async<'result>)
+        (propertyResources: ResourceSpec list)
         (traces: TraceStore)
         (control: NegativeControlSpec<'result>)
         =
@@ -79,7 +104,8 @@ module Property =
             let trialId = Reports.trialId (propertyName + "-negative")
             let store = Reports.traceStore root trialId
 
-            let ctx = workloadContext trialId seed store
+            let! resources = resolveResources store propertyResources
+            let ctx = workloadContext trialId seed store resources
 
             let work = control.Workload |> Option.defaultValue positiveWorkload
             let! result = runWorkload work ctx
@@ -142,7 +168,10 @@ module Property =
 
             let! workloadResult =
                 if List.isEmpty unsupported then
-                    workloadContext trialId config.Seed store |> runWorkload spec.Workload
+                    async {
+                        let! resources = resolveResources store spec.Resources
+                        return! workloadContext trialId config.Seed store resources |> runWorkload spec.Workload
+                    }
                 else
                     async { return Error(String.concat "; " unsupported) }
 
@@ -157,7 +186,9 @@ module Property =
 
             let! negativeControls =
                 spec.NegativeControls
-                |> List.map (runNegativeControl proofName spec.Name config.Root config.Seed spec.Workload store)
+                |> List.map (
+                    runNegativeControl proofName spec.Name config.Root config.Seed spec.Workload spec.Resources store
+                )
                 |> Async.Sequential
 
             let missingNegativeControl =

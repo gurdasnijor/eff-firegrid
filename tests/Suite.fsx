@@ -129,6 +129,68 @@ let suite =
 
         do!
             test
+                "proof resources: s2LiveFromEnv provides workload S2"
+                (async {
+                    let root = mkdtempSync fs (pathJoin path (tmpdir os) "eff-firegrid-proof-runner-")
+
+                    try
+                        let liveS2Property =
+                            property "s2-live-resource" {
+                                s2LiveFromEnv
+
+                                workload (fun ctx ->
+                                    async {
+                                        let s2 = WorkloadContext.requireS2 ctx
+                                        let! basins = s2.Client |> S2.listBasins
+                                        return not (List.isEmpty basins)
+                                    })
+
+                                verify (fun v ->
+                                    [ v.Expect.WorkloadResult "basins are visible" true
+                                      v.Trace.SpanExists
+                                          "s2 live resource span emitted"
+                                          "verification.s2.live.connected"
+                                          [ "resource.kind", "s2LiveFromEnv" ] ])
+                            }
+
+                        let! report =
+                            liveS2Property.RunProperty
+                                { Root = root
+                                  ProofFilter = None
+                                  TrialId = Some "s2-live-resource-trial"
+                                  Preserve = false
+                                  Seed = 1 }
+                                "resource-proof"
+
+                        check "s2LiveFromEnv property passes" report.Passed
+
+                        let missingS2Property =
+                            property "missing-s2-resource" {
+                                workload (fun ctx ->
+                                    async {
+                                        let _ = WorkloadContext.requireS2 ctx
+                                        return true
+                                    })
+
+                                verify (fun v -> [ v.Expect.WorkloadResult "unreachable" true ])
+                            }
+
+                        let! missingReport =
+                            missingS2Property.RunProperty
+                                { Root = root
+                                  ProofFilter = None
+                                  TrialId = Some "missing-s2-resource-trial"
+                                  Preserve = false
+                                  Seed = 1 }
+                                "resource-proof"
+
+                        check "undeclared S2 resource fails workload" missingReport.WorkloadFailed
+                    finally
+                        rmSync fs root
+                })
+
+        do!
+            test
                 "proof traces: trace SQL guardrails"
                 (async {
                     let normalized = TraceProof.normalizeSql "SELECT count() FROM trial_spans;"

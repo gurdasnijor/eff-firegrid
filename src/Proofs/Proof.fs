@@ -1,17 +1,34 @@
 namespace Eff.Proofs
 
+open Eff
+
 type TraceStore =
     { TrialId: string
       Root: string
       SpansJsonl: string }
+
+type S2LiveResource = { Client: S2.Client }
+
+module S2LiveResource =
+    let basin name resource = resource.Client |> S2.basin name
 
 type WorkloadContext =
     { TrialId: string
       Root: string
       Traces: TraceStore
       Seed: int
+      S2: S2LiveResource option
       NextOperationId: unit -> int
       EmitSpan: string -> (string * string) list -> Async<unit> }
+
+module WorkloadContext =
+    let requireS2 (ctx: WorkloadContext) =
+        match ctx.S2 with
+        | Some s2 -> s2
+        | None -> failwith "workload requires s2LiveFromEnv or s2Lite but no S2 resource was declared"
+
+    let s2Basin name ctx =
+        ctx |> requireS2 |> S2LiveResource.basin name
 
 type ProofOperationOptions =
     { ClientId: string option

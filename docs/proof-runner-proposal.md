@@ -17,6 +17,8 @@ Current implementation on `main` and the ergonomic proof-runner branch:
 - ergonomic verifier factories through `Verification.fs`
 - property authoring computation expression: `property "name" { workload ...; verify ... }`
 - runner-owned trial roots, `spans.jsonl`, and `report.json` (`Reports.fs`, `Runner.fs`)
+- first runner-owned resource: `s2LiveFromEnv` connects from local S2 CLI config,
+  exposes `ctx.S2`, and emits `verification.s2.live.connected`
 - CLI path through `proofs run`, `proofs list`, and `npm run proofs -- --proof <filter>`
 - current durable replay checks migrated out of `Harness.fs` into one property
 
@@ -480,9 +482,8 @@ type PropertySpec<'result> =
       Verifiers: Check<'result> list
       NegativeControls: NegativeControlSpec list }
 
-type RunningS2 =
-    { Endpoint: string
-      Basin: S2.Basin }
+type S2LiveResource =
+    { Client: S2.Client }
 
 type RunningHost =
     { Name: string
@@ -496,10 +497,16 @@ type TraceStore =
 
 type WorkloadContext =
     { TrialId: string
-      S2: RunningS2
-      Hosts: Map<string, RunningHost>
+      Root: string
       Traces: TraceStore
-      Faults: FaultController }
+      Seed: int
+      S2: S2LiveResource option
+      NextOperationId: unit -> int
+      EmitSpan: string -> (string * string) list -> Async<unit> }
+
+module WorkloadContext =
+    val requireS2: WorkloadContext -> S2LiveResource
+    val s2Basin: name: string -> WorkloadContext -> S2.Basin
 
 type CompletedTrial<'result> =
     { ProofName: string
@@ -740,7 +747,7 @@ Deliverables:
 1. proof and property CEs
 2. compiled proof registry
 3. basic runner CLI
-4. S2 lite resource lifecycle
+4. `s2LiveFromEnv` resource lifecycle; S2 lite resource lifecycle next
 5. workload result checks
 6. OTLP receiver/exporter writing `spans.jsonl`
 7. `TraceSql` backed by `chdb`

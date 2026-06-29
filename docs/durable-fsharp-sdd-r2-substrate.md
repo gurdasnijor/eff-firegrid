@@ -27,10 +27,15 @@ Implemented slices:
 - **Tier 1 replay core.** `Durable<'a>` terms, positional `OpId`s, `History`, and deterministic `replay`, with compiled replay-law validation.
 - **Tier 1.1 fan-out/fan-in.** `PerformAll` / `Durable.performAll`, modelling the `Task.WhenAll` activity batch shape from `BackupSiteContent`; proof checks positional dispatch, partial replay of only missing completions, and source-order results independent of completion order.
 - **Substrate skeleton.** S2 storage keys, two-stream naming, fenced claim/commit, inbox append, and text relay batch helpers.
+- **Tier 1.2 `WhenAny`.** `Durable.whenAny` models races over activities,
+  timers, and signals. Replay picks the first completed raced operation in
+  history order, and losing timers block for cancellation before the workflow
+  continues. The compiled durable semantics proof covers signal-vs-timeout,
+  timer victory, activity-vs-timer, history-order winner selection, and
+  replay-law compatibility.
 
 Next slices, still one layer + proof at a time:
 
-- `WhenAny` over timers/signals/activities, including cancellation of losing timers.
 - deterministic current time and replay-safe logging, enough to model `Monitor`.
 - an ergonomic F# CE/API that lowers to the proven terms instead of becoming the semantics.
 

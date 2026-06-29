@@ -90,3 +90,16 @@ module Runner =
             processExit (if failed = 0 then 0 else 1)
         }
         |> Async.StartImmediate
+
+    let replay reportPath proofs =
+        let replay = Reports.readReplaySpec reportPath
+
+        printfn "replay report: %s" replay.ReportPath
+        printfn "replay command: %s" replay.ReplayCommand
+
+        run
+            { defaultConfig with
+                ProofFilter = Some replay.PropertyName
+                TrialId = Some replay.TrialId
+                Preserve = true }
+            proofs

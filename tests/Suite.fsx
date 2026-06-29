@@ -452,6 +452,12 @@ let suite =
                         check "killHost report JSON includes hostKill" (reportJson.Contains("\"kind\":\"hostKill\""))
                         check "killHost report JSON includes replay command" (reportJson.Contains("\"replayCommand\""))
 
+                        let replay = Reports.readReplaySpec report.ReportPath
+
+                        check "replay spec keeps property filter" (replay.PropertyName = "process-host-kill-fault")
+                        check "replay spec keeps trial id" (replay.TrialId = "process-host-kill-trial")
+                        check "replay spec keeps command" (replay.ReplayCommand = report.ReplayCommand)
+
                         let undeclaredFault =
                             property "undeclared-process-host-kill" {
                                 workload (fun ctx ->

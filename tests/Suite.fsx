@@ -547,6 +547,42 @@ let suite =
                             |> TraceSql.exists store
 
                         check "spanExists rejects missing span" (not missing)
+
+                        let! missingAttribute =
+                            TraceSql.spanExists "proof.subject_history.append_expected" [ "proof.missing", "value" ]
+                            |> TraceSql.exists store
+
+                        check "spanExists rejects missing attributes without throwing" (not missingAttribute)
+
+                        writeFileSync
+                            fs
+                            spansJsonl
+                            """{"trial_id":"trial-1","name":"verification.operation","attributes":{"firegrid.operation.name":"store.add","firegrid.operation.status":"error"}}
+"""
+
+                        let operationProof =
+                            { TraceOperationMatch.named "store.add" with
+                                Status = Some "ok"
+                                OutputContains = [ "value" ]
+                                Count = Some 1 }
+                            |> TraceProof.operation "missing operation output is a failed proof"
+                            |> TraceProof.asCheck
+
+                        let! operationResult =
+                            operationProof.RunCheck
+                                { ProofName = "trace-proof"
+                                  PropertyName = "trace-property"
+                                  TrialId = "trial-1"
+                                  Result = Ok true
+                                  Traces =
+                                    { TrialId = "trial-1"
+                                      Root = root
+                                      SpansJsonl = spansJsonl }
+                                  Faults = [] }
+
+                        check
+                            "operation verifier treats missing output as failed check"
+                            (Result.isError operationResult)
                     finally
                         rmSync fs root
                 })

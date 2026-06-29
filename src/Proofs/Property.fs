@@ -44,6 +44,21 @@ module Property =
             return List.ofSeq reports
         }
 
+    let private workloadContext (trialId: string) (seed: int) (store: TraceStore) =
+        let nextOperation =
+            let counter = ref 0
+
+            fun () ->
+                counter.Value <- counter.Value + 1
+                counter.Value
+
+        { TrialId = trialId
+          Root = store.Root
+          Traces = store
+          Seed = seed
+          NextOperationId = nextOperation
+          EmitSpan = Reports.emitSpan store }
+
     let private runNegativeControl
         (proofName: string)
         (propertyName: string)
@@ -57,12 +72,7 @@ module Property =
             let trialId = Reports.trialId (propertyName + "-negative")
             let store = Reports.traceStore root trialId
 
-            let ctx =
-                { TrialId = trialId
-                  Root = store.Root
-                  Traces = store
-                  Seed = seed
-                  EmitSpan = Reports.emitSpan store }
+            let ctx = workloadContext trialId seed store
 
             let work = control.Workload |> Option.defaultValue positiveWorkload
             let! result = runWorkload work ctx
@@ -125,14 +135,7 @@ module Property =
 
             let! workloadResult =
                 if List.isEmpty unsupported then
-                    let ctx =
-                        { TrialId = trialId
-                          Root = store.Root
-                          Traces = store
-                          Seed = config.Seed
-                          EmitSpan = Reports.emitSpan store }
-
-                    runWorkload spec.Workload ctx
+                    workloadContext trialId config.Seed store |> runWorkload spec.Workload
                 else
                     async { return Error(String.concat "; " unsupported) }
 
@@ -249,5 +252,14 @@ module PropertySyntax =
 
     let propertyWithControls name resources workload verifiers controls requiresNegativeControl =
         Property.make name resources workload verifiers controls requiresNegativeControl
+
+    let propertyWithVerifiers name workload factory =
+        Property.make name [] workload (factory (Verification.verifiers ())) [] false
+
+    let propertyWithResourcesAndVerifiers name resources workload factory =
+        Property.make name resources workload (factory (Verification.verifiers ())) [] false
+
+    let propertyWithControlsAndVerifiers name resources workload factory controls requiresNegativeControl =
+        Property.make name resources workload (factory (Verification.verifiers ())) controls requiresNegativeControl
 
     let negativeControl<'result> name = Property.negativeControl<'result> name

@@ -14,7 +14,9 @@
 #load "../src/S2/Client.fs"
 #load "../src/S2/Cli.fs"
 #load "../src/S2/Patterns.fs"
+#load "../src/Proofs/Proof.fs"
 #load "../src/Proofs/TraceSql.fs"
+#load "../src/Proofs/TraceProof.fs"
 
 open Fable.Core
 open Fable.Core.JsInterop
@@ -77,6 +79,13 @@ let test (name: string) (body: Async<unit>) =
             printfn "  ✗ threw: %s" e.Message
     }
 
+let checkThrows (name: string) (expected: string) (body: unit -> unit) =
+    try
+        body ()
+        check name false
+    with e ->
+        check name (e.Message.Contains(expected))
+
 // ---- message type for the patterns tests ----
 type Msg = { Id: int; Text: string }
 
@@ -85,6 +94,41 @@ let basinName = "test-basin-885234"
 
 let suite =
     async {
+        do!
+            test
+                "proof traces: trace SQL guardrails"
+                (async {
+                    let normalized = TraceProof.normalizeSql "SELECT count() FROM trial_spans;"
+                    check "trace SQL expands trial_spans macro" (normalized.Contains("file({spans_jsonl:String}"))
+
+                    let operationMatch =
+                        TraceOperationMatch.named "store.add"
+                        |> TraceOperationMatch.status "ok"
+                        |> TraceOperationMatch.outputContains "value"
+                        |> TraceOperationMatch.exactly 1
+
+                    let operationProof = TraceProof.operation "operation recorded" operationMatch
+
+                    check
+                        "traceOperation builds a trial-scoped proof query"
+                        (operationProof.Sql.Contains("verification.operation")
+                         && operationProof.Sql.Contains("file({spans_jsonl:String}")
+                         && operationProof.Sql.Contains("store.add"))
+
+                    checkThrows
+                        "trace SQL rejects tautology proofs"
+                        "must query trial_spans or verification_operations"
+                        (fun () -> TraceProof.normalizeSql "SELECT 1" |> ignore)
+
+                    checkThrows "trace SQL rejects external readers" "cannot use external table readers" (fun () ->
+                        TraceProof.normalizeSql "SELECT count() FROM trial_spans, file('/tmp/x', JSONEachRow)"
+                        |> ignore)
+
+                    checkThrows "trace SQL rejects multiple statements" "one read-only query" (fun () ->
+                        TraceProof.normalizeSql "SELECT count() FROM trial_spans; DROP TABLE x"
+                        |> ignore)
+                })
+
         do!
             test
                 "proof traces: chdb spanExists"

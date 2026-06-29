@@ -37,14 +37,14 @@ module Runner =
             proof.Name.Contains value
             || proof.Properties |> List.exists (fun property -> property.Name.Contains value)
 
-    let listProofs proofs =
+    let listProofs (proofs: ProofSpec list) =
         for proof in proofs do
             printfn "%s" proof.Name
 
             for property in proof.Properties do
                 printfn "  %s" property.Name
 
-    let run config proofs =
+    let run (config: RunnerConfig) (proofs: ProofSpec list) =
         async {
             let selected = proofs |> List.filter (matchesFilter config.ProofFilter)
             let reports = ResizeArray<PropertyReport>()

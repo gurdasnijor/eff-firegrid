@@ -22,8 +22,11 @@
     <Compile Include="src/Proofs/Proof.fs" />
     <Compile Include="src/Proofs/Reports.fs" />
     <Compile Include="src/Proofs/TraceSql.fs" />
+    <Compile Include="src/Proofs/TraceProof.fs" />
     <Compile Include="src/Proofs/Expect.fs" />
     <Compile Include="src/Proofs/TraceExpect.fs" />
+    <Compile Include="src/Proofs/ProofOperation.fs" />
+    <Compile Include="src/Proofs/Verification.fs" />
     <Compile Include="src/Proofs/Property.fs" />
     <Compile Include="src/Proofs/ProofBuilder.fs" />
     <Compile Include="src/Proofs/Runner.fs" />

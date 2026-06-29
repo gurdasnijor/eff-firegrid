@@ -53,6 +53,37 @@ module TraceSql =
                 return int (parsed?``count()``)
         }
 
+    [<Emit("Object.prototype.hasOwnProperty.call($0, $1)")>]
+    let private hasOwnProperty (_value: obj) (_key: string) : bool = jsNative
+
+    [<Emit("Object.values($0)[0]")>]
+    let private firstPropertyValue (_value: obj) : obj = jsNative
+
+    [<Emit("(typeof $0 === 'boolean' ? $0 : typeof $0 === 'number' ? $0 !== 0 : typeof $0 === 'bigint' ? $0 !== 0n : typeof $0 === 'string' ? ($0 !== '' && $0 !== '0' && $0.toLowerCase() !== 'false') : $0 != null)")>]
+    let private truthy (_value: obj) : bool = jsNative
+
+    let scalarTruthy (store: TraceStore) (query: Query) : Async<Result<unit, string>> =
+        async {
+            let! text = raw store query
+            let line = text.Split("\n") |> Array.tryFind (fun row -> row.Trim() <> "")
+
+            match line with
+            | None -> return Error "query returned no rows"
+            | Some row ->
+                let parsed: obj = JS.JSON.parse row
+
+                let value =
+                    if hasOwnProperty parsed "ok" then
+                        parsed?ok
+                    else
+                        firstPropertyValue parsed
+
+                if truthy value then
+                    return Ok()
+                else
+                    return Error "query returned a falsey proof value"
+        }
+
     let exists store query =
         async {
             let! count = scalarInt store query

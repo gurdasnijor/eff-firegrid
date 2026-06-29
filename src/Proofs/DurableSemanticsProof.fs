@@ -161,41 +161,51 @@ module DurableSemanticsProof =
         dispatches && partialReplaysMissing && preservesSourceOrder
 
     let private runWorkload ctx =
-        async {
-            let result =
-                { ActivityReplay = checkActivityReplay ()
-                  EventReplay = checkEventReplay ()
-                  FanOutReplay = checkFanOutReplay ()
-                  ReplayLaws = programs |> List.forall (snd >> replayLawsHold)
-                  SubstrateNaming =
-                    let key = StorageKey "orders/123"
+        ProofOperation.run
+            ctx
+            "durable.replay.laws"
+            "durable-semantics-tier1"
+            { ProofOperationOptions.empty with
+                Key = Some "durable-semantics-tier1" }
+            (async {
+                let result =
+                    { ActivityReplay = checkActivityReplay ()
+                      EventReplay = checkEventReplay ()
+                      FanOutReplay = checkFanOutReplay ()
+                      ReplayLaws = programs |> List.forall (snd >> replayLawsHold)
+                      SubstrateNaming =
+                        let key = StorageKey "orders/123"
 
-                    StorageKey.logStreamName key = "orders/123/log"
-                    && StorageKey.inboxStreamName key = "orders/123/in" }
+                        StorageKey.logStreamName key = "orders/123/log"
+                        && StorageKey.inboxStreamName key = "orders/123/in" }
 
-            do!
-                ctx.EmitSpan
-                    "proof.durable_semantics.completed"
-                    [ "proof.property", "durable-semantics-tier1"
-                      "proof.activity_replay", string result.ActivityReplay
-                      "proof.fan_out", string result.FanOutReplay ]
+                do!
+                    ctx.EmitSpan
+                        "proof.durable_semantics.completed"
+                        [ "proof.property", "durable-semantics-tier1"
+                          "proof.activity_replay", string result.ActivityReplay
+                          "proof.fan_out", string result.FanOutReplay ]
 
-            return result
-        }
+                return result
+            })
 
     let tier1 =
-        property
-            "durable-semantics-tier1"
-            runWorkload
-            [ Expect.workload "activity replay" (fun result -> result.ActivityReplay)
-              Expect.workload "event replay" (fun result -> result.EventReplay)
-              Expect.workload "fan-out/fan-in replay" (fun result -> result.FanOutReplay)
-              Expect.workload "replay laws" (fun result -> result.ReplayLaws)
-              Expect.workload "substrate naming" (fun result -> result.SubstrateNaming)
-              TraceExpect.spanExists
+        propertyWithVerifiers "durable-semantics-tier1" runWorkload (fun v ->
+            [ v.Expect.Workload "activity replay" (fun result -> result.ActivityReplay)
+              v.Expect.Workload "event replay" (fun result -> result.EventReplay)
+              v.Expect.Workload "fan-out/fan-in replay" (fun result -> result.FanOutReplay)
+              v.Expect.Workload "replay laws" (fun result -> result.ReplayLaws)
+              v.Expect.Workload "substrate naming" (fun result -> result.SubstrateNaming)
+              v.Trace.SpanExists
                   "runner trace evidence is queryable"
                   "proof.durable_semantics.completed"
-                  [ "proof.property", "durable-semantics-tier1" ] ]
+                  [ "proof.property", "durable-semantics-tier1" ]
+              v.Trace.Operation
+                  "durable operation was recorded"
+                  ({ TraceOperationMatch.named "durable.replay.laws" with
+                      Status = Some "ok"
+                      OutputContains = [ "ActivityReplay"; "ReplayLaws" ]
+                      Count = Some 1 }) ])
 
     let proof =
         proof "durable-semantics" {

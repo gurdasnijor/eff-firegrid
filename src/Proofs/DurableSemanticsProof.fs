@@ -189,9 +189,35 @@ module DurableSemanticsProof =
                 return result
             })
 
+    let private runBrokenReplayLaw ctx =
+        ProofOperation.run
+            ctx
+            "durable.replay.laws.negative"
+            "durable-semantics-tier1"
+            { ProofOperationOptions.empty with
+                Key = Some "durable-semantics-tier1" }
+            (async {
+                return
+                    { ActivityReplay = true
+                      EventReplay = true
+                      FanOutReplay = true
+                      ReplayLaws = false
+                      SubstrateNaming = true }
+            })
+
+    let private brokenReplayLawControl =
+        negativeControl<DurableSemanticsResult> "broken replay law is caught" {
+            workload runBrokenReplayLaw
+
+            verify (fun v -> [ v.Expect.Workload "replay laws" (fun result -> result.ReplayLaws) ])
+
+            expectFailure "replay laws"
+        }
+
     let tier1 =
         property "durable-semantics-tier1" {
             workload runWorkload
+            requiresNegativeControl
 
             verify (fun v ->
                 [ v.Expect.Workload "activity replay" (fun result -> result.ActivityReplay)
@@ -209,6 +235,8 @@ module DurableSemanticsProof =
                           Status = Some "ok"
                           OutputContains = [ "ActivityReplay"; "ReplayLaws" ]
                           Count = Some 1 }) ])
+
+            negativeControl brokenReplayLawControl
         }
 
     let proof =

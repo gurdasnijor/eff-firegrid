@@ -26,6 +26,9 @@ Current implementation on `main` and the ergonomic proof-runner branch:
 - process-host resource lifecycle: starts declared commands, injects standard
   env, waits for readiness, exposes `ctx.Hosts`, and emits
   `verification.host.start/ready/stop`
+- negative controls can use the same verifier factory shape as positive
+  properties, and the durable semantics proof now requires a negative control
+  that catches a known-bad replay-law result
 - first process fault controller: `ctx.Faults.KillHost` / `WorkloadContext.killHost`
   terminates runner-owned hosts, emits `verification.host.kill`, records
   report-level `hostKill` fault events, and rejects undeclared host faults at

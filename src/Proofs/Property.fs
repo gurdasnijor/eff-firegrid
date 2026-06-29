@@ -368,6 +368,11 @@ module Property =
             { state with
                 Verifiers = state.Verifiers @ verifiers }
 
+        [<CustomOperation("verify")>]
+        member _.Verify(state: NegativeControlDraft<'result>, factory: Verifiers<'result> -> Check<'result> list) =
+            { state with
+                Verifiers = state.Verifiers @ factory (Verification.verifiers ()) }
+
         [<CustomOperation("expectFailure")>]
         member _.ExpectFailure(state: NegativeControlDraft<'result>, expected) =
             { state with

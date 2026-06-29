@@ -66,6 +66,9 @@ Implemented and proof-backed today:
   advances a durable dispatch checkpoint.
 - `ActivityRegistry` and `WorkflowRegistry` provide immutable, explicit
   registration maps with duplicate rejection and typed missing-handler errors.
+- `ActivityCommandAdapter.runOnce` invokes registered activity handlers for
+  committed `CallActivity` commands, durably records `ActivityCompleted`, and
+  checkpoints only after completion admission.
 - The compiled proof runner validates the above against pure laws and ephemeral
   S2 streams.
 
@@ -253,9 +256,10 @@ Proof obligations:
 
 ### L2 Activity Command Adapter
 
-Consume `CallActivity` commands from `DurableCommandDispatch`, invoke the
-registered handler, and append an activity completion record back into the
-instance's durable path.
+Implemented: consume `CallActivity` commands from the dispatcher-scoped
+`"activity"` cursor, invoke the registered handler, and append an activity
+completion record back into the instance log before checkpointing adapter
+progress.
 
 Proof obligations:
 

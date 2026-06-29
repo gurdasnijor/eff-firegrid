@@ -10,4 +10,5 @@ module Registry =
           DurableStepperProof.proof
           DurableHostProof.proof
           DurableCommandDispatchProof.proof
-          DurableRegistryProof.proof ]
+          DurableRegistryProof.proof
+          DurableActivityAdapterProof.proof ]

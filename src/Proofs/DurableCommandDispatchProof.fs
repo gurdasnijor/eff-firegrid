@@ -9,6 +9,7 @@ module DurableCommandDispatchProof =
           PureSelectionHonorsBatchLimit: bool
           PureSelectionFailsClosedOnDecodeError: bool
           CodecRoundTripsCheckpoint: bool
+          DispatcherScopedCursor: bool
           S2CheckpointSuppressesDuplicateDispatch: bool
           S2StaleOwnerCannotCheckpoint: bool }
 
@@ -18,6 +19,8 @@ module DurableCommandDispatchProof =
 
     let private logCommand = WriteLog(OpId 1, "reserved")
 
+    let private dispatcher = "proof-dispatcher"
+
     let private entries =
         [ 1L, Incoming(HistoryEvent(ActivityCalled(OpId 0, activity)))
           2L, Outgoing(Command callCommand)
@@ -25,7 +28,7 @@ module DurableCommandDispatchProof =
           4L, Outgoing(Command logCommand) ]
 
     let private checkPureSelectionFindsCommandsOnly () =
-        let batch = DurableCommandDispatch.selectFromDecoded 10 entries
+        let batch = DurableCommandDispatch.selectFromDecoded dispatcher 10 entries
 
         DispatchBatch.fromSeqNum batch = 0L
         && DispatchBatch.nextSeqNum batch = 5L
@@ -36,7 +39,7 @@ module DurableCommandDispatchProof =
                                               Command = logCommand } ]
 
     let private checkPureSelectionHonorsBatchLimit () =
-        let batch = DurableCommandDispatch.selectFromDecoded 2 entries
+        let batch = DurableCommandDispatch.selectFromDecoded dispatcher 2 entries
 
         DispatchBatch.fromSeqNum batch = 0L
         && DispatchBatch.nextSeqNum batch = 3L
@@ -50,15 +53,26 @@ module DurableCommandDispatchProof =
               2L, Error "bad command body"
               3L, Ok(Outgoing(Command logCommand)) ]
 
-        match DurableCommandDispatch.trySelect 10 decoded with
+        match DurableCommandDispatch.trySelect dispatcher 10 decoded with
         | Error(CommandDispatchFailure.DecodeFailed(2L, "bad command body")) -> true
         | _ -> false
 
     let private checkCodecRoundTripsCheckpoint () =
-        let checkpoint = Incoming(CommandDispatchCheckpoint 42L)
+        let checkpoint = Incoming(CommandDispatchCheckpoint(dispatcher, 42L))
 
         StepRecordCodec.decode (StepRecordCodec.encode checkpoint) = Ok checkpoint
-        && StepRecordCodec.decode "in|dispatch.checkpoint|2:-1" |> Result.isError
+        && StepRecordCodec.decode "in|dispatch.checkpoint|8:activity2:-1" |> Result.isError
+
+    let private checkDispatcherScopedCursor () =
+        let decoded =
+            [ 1L, Incoming(CommandDispatchCheckpoint("other", 5L))
+              2L, Outgoing(Command callCommand) ]
+
+        let batch = DurableCommandDispatch.selectFromDecoded dispatcher 10 decoded
+
+        DispatchBatch.fromSeqNum batch = 0L
+        && DispatchBatch.commands batch = [ { SourceSeqNum = 2L
+                                              Command = callCommand } ]
 
     let private runWorkload ctx =
         ProofOperation.run
@@ -88,14 +102,14 @@ module DurableCommandDispatchProof =
 
                 let! seed = S2Substrate.commitText StepRecordCodec.encode (entries |> List.map snd) owner
 
-                let! pending = DurableCommandDispatch.readPending StepRecordCodec.decode 10 owner
+                let! pending = DurableCommandDispatch.readPending StepRecordCodec.decode dispatcher 10 owner
 
                 let! checkpoint =
                     match pending with
-                    | Ok batch -> DurableCommandDispatch.checkpoint StepRecordCodec.encode owner batch
+                    | Ok batch -> DurableCommandDispatch.checkpoint StepRecordCodec.encode dispatcher owner batch
                     | Error _ -> async.Return CommandDispatchCheckpointResult.NotRequired
 
-                let! afterCheckpoint = DurableCommandDispatch.readPending StepRecordCodec.decode 10 owner
+                let! afterCheckpoint = DurableCommandDispatch.readPending StepRecordCodec.decode dispatcher 10 owner
 
                 let s2CheckpointSuppressesDuplicateDispatch =
                     match seed, pending, checkpoint, afterCheckpoint with
@@ -119,10 +133,12 @@ module DurableCommandDispatchProof =
 
                 let staleBatch =
                     DurableCommandDispatch.selectFromDecoded
+                        dispatcher
                         10
                         [ 0L, Incoming(HistoryEvent(CurrentTimeRecorded(OpId 0, 100L))) ]
 
-                let! staleCheckpoint = DurableCommandDispatch.checkpoint StepRecordCodec.encode staleOwner staleBatch
+                let! staleCheckpoint =
+                    DurableCommandDispatch.checkpoint StepRecordCodec.encode dispatcher staleOwner staleBatch
 
                 let s2StaleOwnerCannotCheckpoint =
                     match staleCheckpoint with
@@ -139,6 +155,7 @@ module DurableCommandDispatchProof =
                       PureSelectionHonorsBatchLimit = checkPureSelectionHonorsBatchLimit ()
                       PureSelectionFailsClosedOnDecodeError = checkPureSelectionFailsClosedOnDecodeError ()
                       CodecRoundTripsCheckpoint = checkCodecRoundTripsCheckpoint ()
+                      DispatcherScopedCursor = checkDispatcherScopedCursor ()
                       S2CheckpointSuppressesDuplicateDispatch = s2CheckpointSuppressesDuplicateDispatch
                       S2StaleOwnerCannotCheckpoint = s2StaleOwnerCannotCheckpoint }
 
@@ -168,6 +185,8 @@ module DurableCommandDispatchProof =
                       result.PureSelectionFailsClosedOnDecodeError)
                   v.Expect.Workload "checkpoint records round-trip through the shared codec" (fun result ->
                       result.CodecRoundTripsCheckpoint)
+                  v.Expect.Workload "dispatch checkpoints are scoped by dispatcher" (fun result ->
+                      result.DispatcherScopedCursor)
                   v.Expect.Workload "S2 checkpoint suppresses duplicate dispatch" (fun result ->
                       result.S2CheckpointSuppressesDuplicateDispatch)
                   v.Expect.Workload "stale owner cannot checkpoint dispatch progress" (fun result ->

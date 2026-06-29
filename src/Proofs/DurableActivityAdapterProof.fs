@@ -6,9 +6,9 @@ open Eff.Foundation.Durable
 module DurableActivityAdapterProof =
     type DurableActivityAdapterResult =
         { CommittedCallInvokesHandler: bool
-          CompletionBeforeCheckpoint: bool
-          RetryDoesNotInvokeCompletedActivity: bool
-          CrashAfterCompletionBeforeCheckpointSkipsHandler: bool
+          CompletionPublishedToInbox: bool
+          RetryDoesNotInvokeCheckpointedActivity: bool
+          CrashAfterPublishBeforeCheckpointSkipsHandler: bool
           MissingHandlerFailsWithoutCheckpoint: bool
           NonActivityCommandsAreIgnored: bool
           StaleOwnerCannotCheckpointProgress: bool }
@@ -30,6 +30,54 @@ module DurableActivityAdapterProof =
         match ActivityRegistry.empty |> ActivityRegistry.register name handler with
         | Ok registry -> registry
         | Error error -> failwith (string error)
+
+    let private appendPublishedCompletion pair sourceSeqNum value =
+        let envelope =
+            { Source = ActivityCommandAdapter.completionSource
+              SourceSeqNum = sourceSeqNum
+              Message = CompleteActivity(OpId 0, value) }
+
+        S2Substrate.appendInboxText [] (InboxEnvelopeCodec.encode envelope) pair
+
+    let private readInbox owner =
+        async {
+            try
+                let! records = S2Substrate.readInbox 0L 100 owner
+
+                return
+                    records
+                    |> List.map (fun record ->
+                        match InboxEnvelopeCodec.decode record.Body with
+                        | Ok envelope -> record.SeqNum, envelope
+                        | Error error -> failwith error)
+            with error ->
+                match S2Errors.classify error with
+                | S2Errors.RangeNotSatisfiable _ -> return []
+                | _ -> return raise error
+        }
+
+    let private hasActivityCheckpoint entries =
+        entries
+        |> List.exists (function
+            | _, Incoming(CommandDispatchCheckpoint("activity", _)) -> true
+            | _ -> false)
+
+    let private hasDirectCompletion entries =
+        entries
+        |> List.exists (function
+            | _, Incoming(HistoryEvent(ActivityCompleted(OpId 0, _))) -> true
+            | _ -> false)
+
+    let private completionEnvelope sourceSeqNum value =
+        function
+        | _,
+          { Source = source
+            SourceSeqNum = seqNum
+            Message = CompleteActivity(OpId 0, completed) } ->
+            source = ActivityCommandAdapter.completionSource
+            && seqNum = sourceSeqNum
+            && completed = value
+        | _ -> false
 
     let private runWorkload ctx =
         ProofOperation.run
@@ -81,6 +129,7 @@ module DurableActivityAdapterProof =
 
                 let! afterFirstRaw = S2Substrate.readLogText StepRecordCodec.decode owner
                 let afterFirst = forceDecoded afterFirstRaw
+                let! firstInbox = readInbox owner
 
                 let committedCallInvokesHandler =
                     match first with
@@ -88,37 +137,34 @@ module DurableActivityAdapterProof =
                         reserveCalls = 1
                         && (report.Completed |> List.map (fun completion -> completion.Value)) = [ "reserved:order-1" ]
                         && report.AlreadyCompleted = 0
+                        && report.AlreadyPublished = 0
                         && report.Ignored = 0
                     | _ -> false
 
-                let completionSeq =
+                let sourceSeqNum =
                     afterFirst
-                    |> List.tryPick (function
-                        | seqNum, Incoming(HistoryEvent(ActivityCompleted(OpId 0, "reserved:order-1"))) -> Some seqNum
+                    |> List.pick (function
+                        | seqNum, Outgoing(Command(CallActivity(OpId 0, called))) when called = activity -> Some seqNum
                         | _ -> None)
 
-                let checkpointSeq =
-                    afterFirst
-                    |> List.tryPick (function
-                        | seqNum, Incoming(CommandDispatchCheckpoint("activity", _)) -> Some seqNum
-                        | _ -> None)
-
-                let completionBeforeCheckpoint =
-                    match completionSeq, checkpointSeq with
-                    | Some completedAt, Some checkpointAt -> completedAt < checkpointAt
-                    | _ -> false
+                let completionPublishedToInbox =
+                    (firstInbox |> List.exists (completionEnvelope sourceSeqNum "reserved:order-1"))
+                    && hasActivityCheckpoint afterFirst
+                    && not (hasDirectCompletion afterFirst)
 
                 let! retry =
                     ActivityCommandAdapter.runOnce StepRecordCodec.encode StepRecordCodec.decode 10 activities owner
 
-                let retryDoesNotInvokeCompletedActivity =
+                let retryDoesNotInvokeCheckpointedActivity =
                     match retry with
                     | ActivityCommandAdapterStatus.Processed report ->
-                        reserveCalls = 1 && List.isEmpty report.Completed && report.AlreadyCompleted = 0
+                        reserveCalls = 1
+                        && List.isEmpty report.Completed
+                        && report.AlreadyCompleted = 0
+                        && report.AlreadyPublished = 0
                     | _ -> false
 
                 let! missingOwner = S2Substrate.claimWith (FenceToken "activity-adapter/missing") missingPair
-
                 let! _missingSeed = S2Substrate.commitText StepRecordCodec.encode callRecords missingOwner
 
                 let! missing =
@@ -135,11 +181,7 @@ module DurableActivityAdapterProof =
                 let missingHandlerFailsWithoutCheckpoint =
                     match missing with
                     | ActivityCommandAdapterStatus.Failed(ActivityCommandAdapterFailure.MissingHandler(ActivityName "reserve")) ->
-                        afterMissing
-                        |> List.exists (function
-                            | _, Incoming(CommandDispatchCheckpoint("activity", _)) -> true
-                            | _ -> false)
-                        |> not
+                        not (hasActivityCheckpoint afterMissing)
                     | _ -> false
 
                 let! ignoredOwner = S2Substrate.claimWith (FenceToken "activity-adapter/ignored") ignoredPair
@@ -174,14 +216,8 @@ module DurableActivityAdapterProof =
                         })
 
                 let! crashOwner = S2Substrate.claimWith (FenceToken "activity-adapter/crash") crashPair
-
-                let! _crashSeed =
-                    S2Substrate.commitText
-                        StepRecordCodec.encode
-                        [ Incoming(HistoryEvent(ActivityCalled(OpId 0, activity)))
-                          Outgoing(Command(CallActivity(OpId 0, activity)))
-                          Incoming(HistoryEvent(ActivityCompleted(OpId 0, "reserved:order-1"))) ]
-                        crashOwner
+                let! _crashSeed = S2Substrate.commitText StepRecordCodec.encode callRecords crashOwner
+                let! _publishedButNotCheckpointed = appendPublishedCompletion crashPair 2L "reserved:order-1"
 
                 let! crashRetry =
                     ActivityCommandAdapter.runOnce
@@ -194,28 +230,19 @@ module DurableActivityAdapterProof =
                 let! afterCrashRaw = S2Substrate.readLogText StepRecordCodec.decode crashOwner
                 let afterCrash = forceDecoded afterCrashRaw
 
-                let crashAfterCompletionBeforeCheckpointSkipsHandler =
+                let crashAfterPublishBeforeCheckpointSkipsHandler =
                     match crashRetry with
                     | ActivityCommandAdapterStatus.Processed report ->
                         crashCalls = 0
                         && List.isEmpty report.Completed
-                        && report.AlreadyCompleted = 1
-                        && (afterCrash
-                            |> List.exists (function
-                                | _, Incoming(CommandDispatchCheckpoint("activity", _)) -> true
-                                | _ -> false))
+                        && report.AlreadyCompleted = 0
+                        && report.AlreadyPublished = 1
+                        && hasActivityCheckpoint afterCrash
                     | _ -> false
 
                 let! staleOwner = S2Substrate.claimWith (FenceToken "activity-adapter/stale") stalePair
-
-                let! _staleSeed =
-                    S2Substrate.commitText
-                        StepRecordCodec.encode
-                        [ Incoming(HistoryEvent(ActivityCalled(OpId 0, activity)))
-                          Outgoing(Command(CallActivity(OpId 0, activity)))
-                          Incoming(HistoryEvent(ActivityCompleted(OpId 0, "reserved:order-1"))) ]
-                        staleOwner
-
+                let! _staleSeed = S2Substrate.commitText StepRecordCodec.encode callRecords staleOwner
+                let! _stalePublished = appendPublishedCompletion stalePair 2L "reserved:order-1"
                 let! _freshOwner = S2Substrate.claimWith (FenceToken "activity-adapter/fresh") stalePair
 
                 let! stale =
@@ -244,10 +271,9 @@ module DurableActivityAdapterProof =
 
                 let result =
                     { CommittedCallInvokesHandler = committedCallInvokesHandler
-                      CompletionBeforeCheckpoint = completionBeforeCheckpoint
-                      RetryDoesNotInvokeCompletedActivity = retryDoesNotInvokeCompletedActivity
-                      CrashAfterCompletionBeforeCheckpointSkipsHandler =
-                        crashAfterCompletionBeforeCheckpointSkipsHandler
+                      CompletionPublishedToInbox = completionPublishedToInbox
+                      RetryDoesNotInvokeCheckpointedActivity = retryDoesNotInvokeCheckpointedActivity
+                      CrashAfterPublishBeforeCheckpointSkipsHandler = crashAfterPublishBeforeCheckpointSkipsHandler
                       MissingHandlerFailsWithoutCheckpoint = missingHandlerFailsWithoutCheckpoint
                       NonActivityCommandsAreIgnored = nonActivityCommandsAreIgnored
                       StaleOwnerCannotCheckpointProgress = staleOwnerCannotCheckpointProgress }
@@ -257,9 +283,9 @@ module DurableActivityAdapterProof =
                         "proof.durable_activity_adapter.completed"
                         [ "proof.property", "durable-activity-adapter"
                           "activity.invoked", string result.CommittedCallInvokesHandler
-                          "activity.ordering", string result.CompletionBeforeCheckpoint
-                          "activity.retry", string result.RetryDoesNotInvokeCompletedActivity
-                          "activity.crash_window", string result.CrashAfterCompletionBeforeCheckpointSkipsHandler
+                          "activity.inbox", string result.CompletionPublishedToInbox
+                          "activity.retry", string result.RetryDoesNotInvokeCheckpointedActivity
+                          "activity.crash_window", string result.CrashAfterPublishBeforeCheckpointSkipsHandler
                           "activity.stale", string result.StaleOwnerCannotCheckpointProgress ]
 
                 return result
@@ -273,12 +299,12 @@ module DurableActivityAdapterProof =
             verify (fun v ->
                 [ v.Expect.Workload "committed CallActivity invokes the registered handler" (fun result ->
                       result.CommittedCallInvokesHandler)
-                  v.Expect.Workload "activity completion is committed before dispatch checkpoint" (fun result ->
-                      result.CompletionBeforeCheckpoint)
-                  v.Expect.Workload "retry does not invoke an already completed activity" (fun result ->
-                      result.RetryDoesNotInvokeCompletedActivity)
-                  v.Expect.Workload "completion-before-checkpoint crash retry skips handler" (fun result ->
-                      result.CrashAfterCompletionBeforeCheckpointSkipsHandler)
+                  v.Expect.Workload "activity completion is published to the inbox before checkpoint" (fun result ->
+                      result.CompletionPublishedToInbox)
+                  v.Expect.Workload "retry does not invoke a checkpointed activity" (fun result ->
+                      result.RetryDoesNotInvokeCheckpointedActivity)
+                  v.Expect.Workload "publish-before-checkpoint crash retry skips handler" (fun result ->
+                      result.CrashAfterPublishBeforeCheckpointSkipsHandler)
                   v.Expect.Workload "missing handler fails without checkpointing" (fun result ->
                       result.MissingHandlerFailsWithoutCheckpoint)
                   v.Expect.Workload "non-activity commands are ignored by the activity adapter" (fun result ->
@@ -295,15 +321,15 @@ module DurableActivityAdapterProof =
                           Status = Some "ok"
                           OutputContains =
                               [ "CommittedCallInvokesHandler"
-                                "CompletionBeforeCheckpoint"
-                                "CrashAfterCompletionBeforeCheckpointSkipsHandler" ]
+                                "CompletionPublishedToInbox"
+                                "CrashAfterPublishBeforeCheckpointSkipsHandler" ]
                           Count = Some 1 }) ])
         }
 
     let proof =
         proof "durable-activity-adapter" {
             describedAs
-                "Committed activity commands invoke registered handlers, admit durable completions, then checkpoint."
+                "Committed activity commands invoke registered handlers, publish inbox completions, then checkpoint."
 
             property activityAdapterProperty
         }

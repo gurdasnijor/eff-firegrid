@@ -53,6 +53,7 @@
     <Compile Include="src/Proofs/DurableRegistryProof.fs" />
     <Compile Include="src/Proofs/DurableActivityAdapterProof.fs" />
     <Compile Include="src/Proofs/DurableInboxFoldProof.fs" />
+    <Compile Include="src/Proofs/DurableActivityInboxProof.fs" />
     <Compile Include="src/Proofs/Registry.fs" />
     <Compile Include="src/Program.fs" />
   </ItemGroup>

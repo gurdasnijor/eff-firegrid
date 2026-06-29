@@ -67,8 +67,8 @@ Implemented and proof-backed today:
 - `ActivityRegistry` and `WorkflowRegistry` provide immutable, explicit
   registration maps with duplicate rejection and typed missing-handler errors.
 - `ActivityCommandAdapter.runOnce` invokes registered activity handlers for
-  committed `CallActivity` commands, durably records `ActivityCompleted`, and
-  checkpoints only after completion admission.
+  committed `CallActivity` commands, publishes `CompleteActivity` envelopes to
+  `{key}/in`, and checkpoints only after inbox publication.
 - `InboxFold.runOnce` admits fresh `{key}/in` arrivals into the fenced log,
   records inbox cursor/highwater progress, and folds activity completions into
   replay history.
@@ -260,16 +260,18 @@ Proof obligations:
 ### L2 Activity Command Adapter
 
 Implemented: consume `CallActivity` commands from the dispatcher-scoped
-`"activity"` cursor, invoke the registered handler, and append an activity
-completion record back into the instance log before checkpointing adapter
-progress.
+`"activity"` cursor, invoke the registered handler, and publish a
+`CompleteActivity` inbox envelope before checkpointing adapter progress.
 
 Proof obligations:
 
 - only committed `CallActivity` commands invoke handlers
-- handler result becomes `ActivityCompleted(opId, value)`
-- dispatch checkpoint is written only after the completion is durably admitted
+- handler result becomes a `CompleteActivity(opId, value)` inbox envelope with
+  source-sequence provenance
+- dispatch checkpoint is written only after the completion is durably published
+  to `{key}/in`
 - retry does not produce two effective completions for the same source command
+- retry after publish-before-checkpoint does not re-invoke the handler
 - stale owner cannot checkpoint adapter progress
 
 ### L3 Inbox Fold
@@ -286,7 +288,23 @@ Proof obligations:
 - activity completion delivery survives host restart
 - concurrent inbox arrivals do not break fenced log commits
 
-### L4 Timer Adapter
+### L4 Activity Inbox Composition
+
+Implemented: compose `DurableHost.runOnce`, `ActivityCommandAdapter.runOnce`,
+and `InboxFold.runOnce` so a committed activity command is handled through the
+inbox path and later consumed by workflow replay.
+
+Proof obligations:
+
+- a two-activity workflow completes through host, adapter, inbox fold, and host
+  ticks
+- the host does not advance on an inbox-published completion until the fold
+  admits it to history
+- adapter publication does not write direct completion history
+- restart after inbox publish before fold still advances
+- duplicate completion envelopes are ignored by source highwater
+
+### L5 Timer Adapter
 
 Consume `ScheduleTimer` and `CancelTimer` commands and admit `TimerFired` when
 the deadline is reached.
@@ -298,7 +316,7 @@ Proof obligations:
 - retry does not create two effective timer firings
 - timer outcomes replay deterministically from history
 
-### L5 Durable Client
+### L6 Durable Client
 
 Expose `Start`, `RaiseSignal`, and `GetStatus`.
 
@@ -309,7 +327,7 @@ Proof obligations:
 - raise-signal admission is durable before acknowledgement
 - status is derived from durable history, not volatile host state
 
-### L6 Ergonomic Host
+### L7 Ergonomic Host
 
 Expose `DurableRuntime.create`, `Host.RunOnce`, `Host.RunUntilIdle`, and then
 `Host.RunForever`.

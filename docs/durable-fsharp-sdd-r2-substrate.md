@@ -33,10 +33,14 @@ Implemented slices:
   continues. The compiled durable semantics proof covers signal-vs-timeout,
   timer victory, activity-vs-timer, history-order winner selection, and
   replay-law compatibility.
+- **Tier 1.3 deterministic time and replay-safe logging.**
+  `Durable.currentTime` records logical time in history before use, and
+  `Durable.log` records log emission in history so replay can skip duplicate
+  emissions. The compiled proof covers direct time/log replay and a
+  Monitor-style timer loop.
 
 Next slices, still one layer + proof at a time:
 
-- deterministic current time and replay-safe logging, enough to model `Monitor`.
 - an ergonomic F# CE/API that lowers to the proven terms instead of becoming the semantics.
 
 One surprising constraint surfaced from your own code — see §1.

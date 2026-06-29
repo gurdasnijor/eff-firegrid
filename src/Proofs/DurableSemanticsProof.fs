@@ -8,6 +8,7 @@ module DurableSemanticsProof =
           EventReplay: bool
           FanOutReplay: bool
           WhenAnyReplay: bool
+          TimeAndLoggingReplay: bool
           ReplayLaws: bool
           SubstrateNaming: bool }
 
@@ -26,6 +27,10 @@ module DurableSemanticsProof =
             | (id, RaceEvent(Signal name)) :: _ -> [ SignalReceived(id, name, "sig:" + name) ]
             | [] -> []
         | NeedsTimerCancellation timers -> timers |> List.map TimerCanceled
+        | NeedsCurrentTime ->
+            let (OpId value) = opId
+            [ CurrentTimeRecorded(opId, 1000L + int64 value) ]
+        | NeedsLog message -> [ LogEmitted(opId, message) ]
 
     let private drive (start: History) (program: Durable<string>) : string * History =
         let rec loop history =
@@ -66,7 +71,15 @@ module DurableSemanticsProof =
               match winner with
               | EventWon(0, Signal "approved", value) -> Durable.result ("approved:" + value)
               | EventWon(1, Timer _, _) -> Durable.result "timeout"
-              | _ -> Durable.result "unexpected") ]
+              | _ -> Durable.result "unexpected")
+
+          "monitor time and log",
+          Durable.currentTime
+          |> Durable.bind (fun now ->
+              Durable.log ("monitor:" + string now)
+              |> Durable.bind (fun () ->
+                  Durable.await (Timer(now + 10L))
+                  |> Durable.bind (fun _ -> Durable.result ("done:" + string now)))) ]
 
     let private replayLawsHold (program: Durable<string>) =
         let result, full = drive History.empty program
@@ -260,6 +273,80 @@ module DurableSemanticsProof =
         && earliestHistoryEventWins
         && activityWinCancelsTimer
 
+    let private checkTimeAndLoggingReplay () =
+        let timeThenLog =
+            Durable.currentTime
+            |> Durable.bind (fun now ->
+                Durable.log ("observed:" + string now)
+                |> Durable.bind (fun () -> Durable.result ("done:" + string now)))
+
+        let currentTimeBlocks =
+            match Durable.replay History.empty timeThenLog with
+            | Blocked(OpId 0, NeedsCurrentTime) -> true
+            | _ -> false
+
+        let recordedTimeDrivesLogNeed =
+            let history = History.empty |> History.append (CurrentTimeRecorded(OpId 0, 42L))
+
+            match Durable.replay history timeThenLog with
+            | Blocked(OpId 1, NeedsLog "observed:42") -> true
+            | _ -> false
+
+        let recordedLogReplaysWithoutDuplicate =
+            let history =
+                History.empty
+                |> History.append (CurrentTimeRecorded(OpId 0, 42L))
+                |> History.append (LogEmitted(OpId 1, "observed:42"))
+
+            match Durable.replay history timeThenLog with
+            | Done value -> value = "done:42"
+            | _ -> false
+
+        let rec monitor remaining =
+            Durable.currentTime
+            |> Durable.bind (fun now ->
+                Durable.log (sprintf "monitor:%d:%d" remaining now)
+                |> Durable.bind (fun () ->
+                    if remaining = 0 then
+                        Durable.result ("complete:" + string now)
+                    else
+                        Durable.await (Timer(now + 10L))
+                        |> Durable.bind (fun _ -> monitor (remaining - 1))))
+
+        let result, full = drive History.empty (monitor 2)
+        let events = History.toList full
+
+        let monitorCompletes = result.StartsWith("complete:")
+
+        let logEvents =
+            events
+            |> List.choose (function
+                | LogEmitted(_, message) -> Some message
+                | _ -> None)
+
+        let logsOncePerIteration =
+            logEvents.Length = 3 && (logEvents |> Set.ofList |> Set.count) = 3
+
+        let replayDoesNotAddLogNeeds =
+            match Durable.replay full (monitor 2) with
+            | Done replayed -> replayed = result
+            | Blocked(_, NeedsLog _) -> false
+            | _ -> false
+
+        let crashEquivalent =
+            [ for i in 0 .. events.Length -> events |> List.truncate i ]
+            |> List.forall (fun prefix ->
+                let replayed, completed = drive (History.ofList prefix) (monitor 2)
+                replayed = result && History.toList completed = events)
+
+        currentTimeBlocks
+        && recordedTimeDrivesLogNeed
+        && recordedLogReplaysWithoutDuplicate
+        && monitorCompletes
+        && logsOncePerIteration
+        && replayDoesNotAddLogNeeds
+        && crashEquivalent
+
     let private runWorkload ctx =
         ProofOperation.run
             ctx
@@ -273,6 +360,7 @@ module DurableSemanticsProof =
                       EventReplay = checkEventReplay ()
                       FanOutReplay = checkFanOutReplay ()
                       WhenAnyReplay = checkWhenAnyReplay ()
+                      TimeAndLoggingReplay = checkTimeAndLoggingReplay ()
                       ReplayLaws = programs |> List.forall (snd >> replayLawsHold)
                       SubstrateNaming =
                         let key = StorageKey "orders/123"
@@ -286,7 +374,8 @@ module DurableSemanticsProof =
                         [ "proof.property", "durable-semantics-tier1"
                           "proof.activity_replay", string result.ActivityReplay
                           "proof.fan_out", string result.FanOutReplay
-                          "proof.when_any", string result.WhenAnyReplay ]
+                          "proof.when_any", string result.WhenAnyReplay
+                          "proof.time_logging", string result.TimeAndLoggingReplay ]
 
                 return result
             })
@@ -304,6 +393,7 @@ module DurableSemanticsProof =
                       EventReplay = true
                       FanOutReplay = true
                       WhenAnyReplay = true
+                      TimeAndLoggingReplay = true
                       ReplayLaws = false
                       SubstrateNaming = true }
             })
@@ -327,6 +417,7 @@ module DurableSemanticsProof =
                   v.Expect.Workload "event replay" (fun result -> result.EventReplay)
                   v.Expect.Workload "fan-out/fan-in replay" (fun result -> result.FanOutReplay)
                   v.Expect.Workload "when-any replay" (fun result -> result.WhenAnyReplay)
+                  v.Expect.Workload "time/logging replay" (fun result -> result.TimeAndLoggingReplay)
                   v.Expect.Workload "replay laws" (fun result -> result.ReplayLaws)
                   v.Expect.Workload "substrate naming" (fun result -> result.SubstrateNaming)
                   v.Trace.SpanExists
@@ -337,7 +428,7 @@ module DurableSemanticsProof =
                       "durable operation was recorded"
                       ({ TraceOperationMatch.named "durable.replay.laws" with
                           Status = Some "ok"
-                          OutputContains = [ "ActivityReplay"; "WhenAnyReplay"; "ReplayLaws" ]
+                          OutputContains = [ "ActivityReplay"; "TimeAndLoggingReplay"; "ReplayLaws" ]
                           Count = Some 1 }) ])
 
             negativeControl brokenReplayLawControl

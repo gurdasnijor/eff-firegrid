@@ -25,10 +25,14 @@ type Durable<'a> =
     | PerformAll of Activity list * k: (Value list -> Durable<'a>)
     | Await of EventKey * k: (Value -> Durable<'a>)
     | WhenAny of RaceTask list * k: (RaceResult -> Durable<'a>)
+    | CurrentTime of k: (int64 -> Durable<'a>)
+    | Log of message: string * k: (unit -> Durable<'a>)
 
 type Event =
     | ActivityCalled of OpId * Activity
     | ActivityCompleted of OpId * Value
+    | CurrentTimeRecorded of OpId * timestamp: int64
+    | LogEmitted of OpId * message: string
     | TimerCreated of OpId * deadline: int64
     | TimerFired of OpId
     | TimerCanceled of OpId
@@ -42,6 +46,8 @@ type Need =
     | NeedsEvent of EventKey
     | NeedsRace of (OpId * RaceTask) list
     | NeedsTimerCancellation of OpId list
+    | NeedsCurrentTime
+    | NeedsLog of message: string
 
 type Outcome<'a> =
     | Done of 'a
@@ -70,6 +76,18 @@ module History =
         |> List.tryPick (function
             | ActivityCompleted(id, value) when id = opId -> Some value
             | _ -> None)
+
+    let currentTime opId (History events) =
+        events
+        |> List.tryPick (function
+            | CurrentTimeRecorded(id, timestamp) when id = opId -> Some timestamp
+            | _ -> None)
+
+    let logEmitted opId message (History events) =
+        events
+        |> List.exists (function
+            | LogEmitted(id, logged) when id = opId && logged = message -> true
+            | _ -> false)
 
     let resolved opId key (History events) =
         match key with
@@ -115,6 +133,8 @@ module Durable =
             | PerformAll(activities, k) -> PerformAll(activities, k >> loop)
             | Await(key, k) -> Await(key, k >> loop)
             | WhenAny(tasks, k) -> WhenAny(tasks, k >> loop)
+            | CurrentTime k -> CurrentTime(k >> loop)
+            | Log(message, k) -> Log(message, k >> loop)
 
         loop program
 
@@ -127,6 +147,10 @@ module Durable =
     let await key = Await(key, Return)
 
     let whenAny tasks = WhenAny(tasks, Return)
+
+    let currentTime = CurrentTime Return
+
+    let log message = Log(message, Return)
 
     let replay history program =
         let rec loop opId current =
@@ -188,5 +212,14 @@ module Durable =
                         loop (OpId.add tasks.Length opId) (k winner)
                     else
                         Blocked(opId, NeedsTimerCancellation uncanceledTimers)
+            | CurrentTime k ->
+                match History.currentTime opId history with
+                | Some timestamp -> loop (OpId.next opId) (k timestamp)
+                | None -> Blocked(opId, NeedsCurrentTime)
+            | Log(message, k) ->
+                if History.logEmitted opId message history then
+                    loop (OpId.next opId) (k ())
+                else
+                    Blocked(opId, NeedsLog message)
 
         loop OpId.zero program

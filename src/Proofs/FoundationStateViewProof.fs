@@ -16,6 +16,7 @@ module FoundationStateViewProof =
           EventualSnapshot: bool
           StrongFollowerCatchUp: bool
           StrongFollowerState: bool
+          StopClosesCursor: bool
           PumpErrorFailsStrongRead: bool
           PumpErrorFailsEventualRead: bool
           StopAfterPumpError: bool }
@@ -103,7 +104,15 @@ module FoundationStateViewProof =
                 let! appended = SubjectHistory.append basin CounterRecord.codec subject [ Add 4; Mark "after-start" ]
 
                 let! followerStrong = StateView.read Strong view
-                do! StateView.stop view
+
+                let! stopClosesCursor =
+                    async {
+                        try
+                            do! StateView.stop view
+                            return true
+                        with _ ->
+                            return false
+                    }
 
                 let! _ = SubjectHistory.append basin RawRecord.codec failedSubject [ "corrupt" ]
 
@@ -142,6 +151,7 @@ module FoundationStateViewProof =
                       StrongFollowerState =
                         followerStrong.State.Total = 7
                         && followerStrong.State.Labels = [ "seeded"; "after-start" ]
+                      StopClosesCursor = stopClosesCursor
                       PumpErrorFailsStrongRead = pumpErrorFailsStrongRead
                       PumpErrorFailsEventualRead = pumpErrorFailsEventualRead
                       StopAfterPumpError = stopAfterPumpError }
@@ -152,6 +162,7 @@ module FoundationStateViewProof =
                         [ "proof.property", "foundation.state-view"
                           "foundation.seeded", string result.StrongSeededState
                           "foundation.catch_up", string result.StrongFollowerCatchUp
+                          "foundation.stop", string result.StopClosesCursor
                           "foundation.pump_error", string result.PumpErrorFailsStrongRead ]
 
                 return result
@@ -168,6 +179,7 @@ module FoundationStateViewProof =
                   v.Expect.Workload "eventual read returns local snapshot" (fun result -> result.EventualSnapshot)
                   v.Expect.Workload "strong read catches follower append" (fun result -> result.StrongFollowerCatchUp)
                   v.Expect.Workload "strong read returns follower state" (fun result -> result.StrongFollowerState)
+                  v.Expect.Workload "stop closes the StateView cursor" (fun result -> result.StopClosesCursor)
                   v.Expect.Workload "pump error fails strong read" (fun result -> result.PumpErrorFailsStrongRead)
                   v.Expect.Workload "pump error fails eventual read" (fun result -> result.PumpErrorFailsEventualRead)
                   v.Expect.Workload "stop completes after pump error" (fun result -> result.StopAfterPumpError)

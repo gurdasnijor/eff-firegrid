@@ -34,7 +34,8 @@ module FoundationKvStoreProof =
           DeleteAck: bool
           StrongGetAfterDelete: bool
           StrongFollowerCatchUp: bool
-          WriteAckBeforeLocalApply: bool
+          StableKeyAppliedBeforeFailure: bool
+          PutReturnsBeforeLocalApply: bool
           StrongReadFailsAfterApplyFailure: bool
           EventualReadFailsAfterApplyFailure: bool }
 
@@ -174,10 +175,9 @@ module FoundationKvStoreProof =
                       DeleteAck = deleteVersion = SubjectHistory.Version 2L
                       StrongGetAfterDelete = strongDeleteVersion = deleteVersion && strongDeleteValue = None
                       StrongFollowerCatchUp = externalReadVersion = externalVersion && externalValue = Some 2
-                      WriteAckBeforeLocalApply =
-                        stableVersion = normalVersion
-                        && stableValue = Some 10
-                        && failingVersion = SubjectHistory.Version(SubjectHistory.versionNumber normalVersion + 1L)
+                      StableKeyAppliedBeforeFailure = stableVersion = normalVersion && stableValue = Some 10
+                      PutReturnsBeforeLocalApply =
+                        failingVersion = SubjectHistory.Version(SubjectHistory.versionNumber normalVersion + 1L)
                       StrongReadFailsAfterApplyFailure = strongFailure
                       EventualReadFailsAfterApplyFailure = eventualFailure }
 
@@ -187,7 +187,7 @@ module FoundationKvStoreProof =
                         [ "proof.property", "foundation.kv-store"
                           "foundation.put", string result.StrongGetAfterPut
                           "foundation.delete", string result.StrongGetAfterDelete
-                          "foundation.write_ack_window", string result.WriteAckBeforeLocalApply ]
+                          "foundation.write_ack_window", string result.PutReturnsBeforeLocalApply ]
 
                 return result
             })
@@ -205,8 +205,10 @@ module FoundationKvStoreProof =
                   v.Expect.Workload "strong get observes delete" (fun result -> result.StrongGetAfterDelete)
                   v.Expect.Workload "strong get catches up to another writer" (fun result ->
                       result.StrongFollowerCatchUp)
-                  v.Expect.Workload "write ack precedes local apply success" (fun result ->
-                      result.WriteAckBeforeLocalApply)
+                  v.Expect.Workload "precondition stable key is applied" (fun result ->
+                      result.StableKeyAppliedBeforeFailure)
+                  v.Expect.Workload "put returns durable version before local apply succeeds" (fun result ->
+                      result.PutReturnsBeforeLocalApply)
                   v.Expect.Workload "strong read fails after local apply failure" (fun result ->
                       result.StrongReadFailsAfterApplyFailure)
                   v.Expect.Workload "eventual read fails after local apply failure" (fun result ->
@@ -219,7 +221,7 @@ module FoundationKvStoreProof =
                       "foundation KvStore operation was recorded"
                       ({ TraceOperationMatch.named "foundation.kv_store" with
                           Status = Some "ok"
-                          OutputContains = [ "WriteAckBeforeLocalApply"; "StrongFollowerCatchUp" ]
+                          OutputContains = [ "PutReturnsBeforeLocalApply"; "StableKeyAppliedBeforeFailure" ]
                           Count = Some 1 }) ])
         }
 

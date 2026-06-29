@@ -126,33 +126,6 @@ module Program =
     let play () =
         run "dotnet" [ "fable"; "repl.fsx"; "--outDir"; "build"; "--runScript" ]
 
-    let scriptSubjectHistory () =
-        run
-            "dotnet"
-            [ "fable"
-              "scripts/foundation-00-subject-history.fsx"
-              "--outDir"
-              "build_script"
-              "--runScript" ]
-
-    let scriptStateView () =
-        run
-            "dotnet"
-            [ "fable"
-              "scripts/foundation-01-state-view.fsx"
-              "--outDir"
-              "build_state_view"
-              "--runScript" ]
-
-    let scriptKvStore () =
-        run
-            "dotnet"
-            [ "fable"
-              "scripts/foundation-02-kv-store.fsx"
-              "--outDir"
-              "build_kv_store"
-              "--runScript" ]
-
     let proofs proof =
         let env =
             match proof with
@@ -179,9 +152,6 @@ module Program =
         build ()
         lint ()
         fableSmoke ()
-        scriptSubjectHistory ()
-        scriptStateView ()
-        scriptKvStore ()
         test ()
         proofs None
 
@@ -208,9 +178,6 @@ module Program =
         Target.create "Lint" (fun _ -> lint ())
         Target.create "FableSmoke" (fun _ -> fableSmoke ())
         Target.create "Play" (fun _ -> play ())
-        Target.create "ScriptSubjectHistory" (fun _ -> scriptSubjectHistory ())
-        Target.create "ScriptStateView" (fun _ -> scriptStateView ())
-        Target.create "ScriptKvStore" (fun _ -> scriptKvStore ())
         Target.create "Proofs" (fun _ -> proofs proof)
         Target.create "Test" (fun _ -> test ())
         Target.create "Bench" (fun _ -> bench ())
@@ -224,9 +191,6 @@ module Program =
         "RestoreTools" ==> "Lint" |> ignore
         "RestoreTools" ==> "FableSmoke" |> ignore
         "RestoreTools" ==> "Play" |> ignore
-        "RestoreTools" ==> "ScriptSubjectHistory" |> ignore
-        "RestoreTools" ==> "ScriptStateView" |> ignore
-        "RestoreTools" ==> "ScriptKvStore" |> ignore
         "RestoreTools" ==> "Proofs" |> ignore
         "RestoreTools" ==> "Test" |> ignore
         "RestoreTools" ==> "Bench" |> ignore

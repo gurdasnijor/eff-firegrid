@@ -57,12 +57,21 @@ Implemented slices:
   S2 commit/readback path. `StepRecordCodec` is the shared length-prefixed text
   codec for those records, with proof coverage for all cases, separator-bearing
   payloads, and malformed input rejection.
+- **Tier 2.3 DurableHost.runOnce.**
+  `DurableHost.stepOnce/runOnce` is the first production host work-item
+  boundary, still deliberately not a daemon. It reads `{key}/log` through
+  `S2Substrate.readLogText`, decodes with `StepRecordCodec`, derives history
+  with `DurableStepper.historyFromRecords`, runs `DurableStepper.plan`, commits
+  only `Commit` plans through `DurableStepper.commit`, and returns explicit
+  `Completed`, `Committed`, `Waiting`, `Deposed`, or `Failed` status. The
+  compiled proof covers first activity commit, duplicate suppression on a
+  second run, completed-activity advancement to the next need, and stale-fence
+  deposition.
 
 Next slices, still one layer + proof at a time:
 
-- add the first host loop that repeatedly reads `{key}/log`, runs
-  `DurableStepper.plan`, commits under the fence, and stops cleanly when
-  deposed.
+- add the narrow command-dispatch boundary for committed `Outgoing(Command _)`
+  records, without adding a daemon scheduler or broad host loop.
 
 One surprising constraint surfaced from your own code — see §1.
 

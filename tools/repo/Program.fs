@@ -159,6 +159,7 @@ module Program =
         build ()
         lint ()
         fableSmoke ()
+        scriptSubjectHistory ()
         test ()
         proofs None
 

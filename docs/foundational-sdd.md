@@ -339,8 +339,14 @@ Prove:
 - local fold state updates from tail records
 - eventual read can observe current local state
 - strong read calls `checkTail` and waits for `AppliedTail`
-- write ack returns before local apply where the script can observe that window
 - second host can append; first host strong-read catches up to that append
+- terminal cursor/decode/apply failures fail reads and stop cleanly
+
+The write-ack-before-local-apply window belongs to the first API that owns
+writes. `StateView` has no write method; C2 writes in scripts are direct
+`SubjectHistory.append` calls used to drive the follower. Prove that window in
+C3 `KvStore.put/delete`, where the store can acknowledge the append before its
+local `StateView` has applied it.
 
 ## Capability C3: KvStore
 

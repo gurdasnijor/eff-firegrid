@@ -102,16 +102,20 @@ module SubjectHistory =
             return Version ack.End.SeqNum
         }
 
-    let openCursor basin codec subject (Seq from) =
+    let openCursorWithWait waitSecs basin codec subject (Seq from) =
         async {
             let! cursor =
                 stream basin subject
                 |> S2.readCursor
                     { S2.ReadOptions.empty with
-                        Start = Some(S2.FromSeqNum from) }
+                        Start = Some(S2.FromSeqNum from)
+                        WaitSecs = waitSecs }
 
             return { Codec = codec; Cursor = cursor }
         }
+
+    let openCursor basin codec subject from =
+        openCursorWithWait None basin codec subject from
 
     let tryNext cursor =
         async {

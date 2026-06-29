@@ -54,6 +54,7 @@ module Program =
           "build_proofs"
           "build_script"
           "build_scripts"
+          "build_state_view"
           "build_subject_history"
           "tools/repo/bin"
           "tools/repo/obj" ]
@@ -133,6 +134,15 @@ module Program =
               "build_script"
               "--runScript" ]
 
+    let scriptStateView () =
+        run
+            "dotnet"
+            [ "fable"
+              "scripts/foundation-01-state-view.fsx"
+              "--outDir"
+              "build_state_view"
+              "--runScript" ]
+
     let proofs proof =
         let env =
             match proof with
@@ -160,6 +170,7 @@ module Program =
         lint ()
         fableSmoke ()
         scriptSubjectHistory ()
+        scriptStateView ()
         test ()
         proofs None
 
@@ -187,6 +198,7 @@ module Program =
         Target.create "FableSmoke" (fun _ -> fableSmoke ())
         Target.create "Play" (fun _ -> play ())
         Target.create "ScriptSubjectHistory" (fun _ -> scriptSubjectHistory ())
+        Target.create "ScriptStateView" (fun _ -> scriptStateView ())
         Target.create "Proofs" (fun _ -> proofs proof)
         Target.create "Test" (fun _ -> test ())
         Target.create "Bench" (fun _ -> bench ())
@@ -201,6 +213,7 @@ module Program =
         "RestoreTools" ==> "FableSmoke" |> ignore
         "RestoreTools" ==> "Play" |> ignore
         "RestoreTools" ==> "ScriptSubjectHistory" |> ignore
+        "RestoreTools" ==> "ScriptStateView" |> ignore
         "RestoreTools" ==> "Proofs" |> ignore
         "RestoreTools" ==> "Test" |> ignore
         "RestoreTools" ==> "Bench" |> ignore

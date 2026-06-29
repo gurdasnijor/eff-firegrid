@@ -10,7 +10,8 @@ module ProcessHost =
 
     type Instance =
         { Resource: HostResource
-          Stop: unit -> Async<unit> }
+          Stop: unit -> Async<unit>
+          Kill: unit -> Async<unit> }
 
     [<Import("spawn", "node:child_process")>]
     let private spawn (_command: string) (_args: string array) (_options: obj) : ChildProcess = jsNative
@@ -63,6 +64,23 @@ module ProcessHost =
     let start (store: TraceStore) (trialId: string) (s2: S2Resource option) (spec: ProcessHostSpec) =
         async {
             let proc = spawn spec.Command (spec.Args |> List.toArray) (options trialId s2 spec)
+            let running = ref true
+
+            let terminate spanName signal =
+                async {
+                    if running.Value then
+                        running.Value <- false
+                        let accepted = proc.kill signal
+
+                        do!
+                            Reports.emitSpan
+                                store
+                                spanName
+                                [ "host.name", spec.Name
+                                  "host.pid", string proc.pid
+                                  "verification.signal", signal
+                                  "verification.accepted", string accepted ]
+                }
 
             do!
                 Reports.emitSpan
@@ -96,20 +114,10 @@ module ProcessHost =
                         { Name = spec.Name
                           ProcessId = proc.pid
                           ReadinessUrl = spec.ReadinessUrl }
-                      Stop =
-                        fun () ->
-                            async {
-                                proc.kill "SIGTERM" |> ignore
-
-                                do!
-                                    Reports.emitSpan
-                                        store
-                                        "verification.host.stop"
-                                        [ "host.name", spec.Name
-                                          "host.pid", string proc.pid
-                                          "verification.signal", "SIGTERM" ]
-                            } }
+                      Stop = fun () -> terminate "verification.host.stop" "SIGTERM"
+                      Kill = fun () -> terminate "verification.host.kill" "SIGKILL" }
             with error ->
+                running.Value <- false
                 proc.kill "SIGKILL" |> ignore
                 return raise error
         }

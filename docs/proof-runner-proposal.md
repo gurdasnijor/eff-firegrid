@@ -24,6 +24,9 @@ Current implementation on `main` and the ergonomic proof-runner branch:
 - process-host resource lifecycle: starts declared commands, injects standard
   env, waits for readiness, exposes `ctx.Hosts`, and emits
   `verification.host.start/ready/stop`
+- first process fault controller: `ctx.Faults.KillHost` / `WorkloadContext.killHost`
+  terminates runner-owned hosts, emits `verification.host.kill`, and rejects
+  undeclared host faults at the workload boundary
 - CLI path through `proofs run`, `proofs list`, and `npm run proofs -- --proof <filter>`
 - current durable replay checks migrated out of `Harness.fs` into one property
 
@@ -437,15 +440,20 @@ Initial fault controls:
 
 ```fsharp
 type FaultController =
-    abstract FailAppend: ordinal: int -> Async<unit>
-    abstract KillHost: name: string -> Async<unit>
-    abstract RestartHost: name: string -> Async<unit>
-    abstract KillAfterSpan:
+    { KillHost: name: string -> Async<unit>
+      RestartHost: name: string -> Async<unit>
+      FailAppend: ordinal: int -> Async<unit>
+      KillAfterSpan:
         host: string
-        * spanName: string
-        * attributes: Map<string, string>
-        -> Async<unit>
+            * spanName: string
+            * attributes: Map<string, string>
+            -> Async<unit> }
 ```
+
+The implemented first slice is deliberately smaller: `KillHost` is available
+for declared `processHost` resources and records a `verification.host.kill`
+span with the host name, process id, signal, and whether the OS accepted the
+signal. Undeclared host faults fail the workload instead of being ignored.
 
 The first high-value cases:
 
@@ -503,12 +511,16 @@ type WorkloadContext =
       Traces: TraceStore
       Seed: int
       S2: S2Resource option
+      Hosts: Map<string, RunningHost>
+      Faults: FaultController
       NextOperationId: unit -> int
       EmitSpan: string -> (string * string) list -> Async<unit> }
 
 module WorkloadContext =
     val requireS2: WorkloadContext -> S2Resource
     val s2Basin: name: string -> WorkloadContext -> S2.Basin
+    val requireHost: name: string -> WorkloadContext -> RunningHost
+    val killHost: name: string -> WorkloadContext -> Async<unit>
 
 type CompletedTrial<'result> =
     { ProofName: string
@@ -769,10 +781,10 @@ Acceptance criteria:
 
 Deliverables:
 
-1. `FaultController`
+1. `FaultController` with first `processHost` kill slice implemented
 2. negative-control runner
 3. deterministic append failure hooks
-4. process kill/restart hooks
+4. richer process restart and span-triggered kill hooks
 5. expected-failure verification
 
 Acceptance criteria:

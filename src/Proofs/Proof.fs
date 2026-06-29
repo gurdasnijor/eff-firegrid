@@ -42,6 +42,13 @@ type HostResource =
       ProcessId: int
       ReadinessUrl: string option }
 
+type FaultController = { KillHost: string -> Async<unit> }
+
+module FaultController =
+    let empty =
+        { KillHost =
+            fun name -> async { return failwithf "processHost '%s' is not supervised by the verification runner" name } }
+
 type WorkloadContext =
     { TrialId: string
       Root: string
@@ -49,6 +56,7 @@ type WorkloadContext =
       Seed: int
       S2: S2Resource option
       Hosts: Map<string, HostResource>
+      Faults: FaultController
       NextOperationId: unit -> int
       EmitSpan: string -> (string * string) list -> Async<unit> }
 
@@ -65,6 +73,8 @@ module WorkloadContext =
         match ctx.Hosts |> Map.tryFind name with
         | Some host -> host
         | None -> failwithf "workload requires processHost '%s' but it was not declared" name
+
+    let killHost name (ctx: WorkloadContext) = ctx.Faults.KillHost name
 
 type ProofOperationOptions =
     { ClientId: string option

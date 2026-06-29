@@ -55,6 +55,12 @@ let writeFileSync (_fs: obj) (_path: string) (_content: string) : unit = jsNativ
 [<Emit("fetch($0).then(r => r.text())")>]
 let fetchText (_url: string) : JS.Promise<string> = jsNative
 
+[<Emit("fetch($0).then(r => r.ok).catch(() => false)")>]
+let fetchOk (_url: string) : JS.Promise<bool> = jsNative
+
+[<Emit("new Promise(resolve => setTimeout(resolve, $0))")>]
+let sleep (_millis: int) : JS.Promise<unit> = jsNative
+
 [<Emit("$0.rmSync($1, { recursive: true, force: true })")>]
 let rmSync (_fs: obj) (_path: string) : unit = jsNative
 
@@ -362,6 +368,104 @@ let suite =
                                 "resource-proof"
 
                         check "duplicate processHost names are rejected" duplicateReport.WorkloadFailed
+                    finally
+                        rmSync fs root
+                })
+
+        do!
+            test
+                "proof faults: killHost terminates a runner-owned process"
+                (async {
+                    let root = mkdtempSync fs (pathJoin path (tmpdir os) "eff-firegrid-proof-runner-")
+                    let port = 41000 + counter
+                    counter <- counter + 1
+                    let readyUrl = sprintf "http://127.0.0.1:%d/ready" port
+                    let echoUrl = sprintf "http://127.0.0.1:%d/echo" port
+
+                    let script =
+                        "const http = require('node:http');"
+                        + "const port = Number(process.env.HOST_PORT);"
+                        + "const server = http.createServer((req, res) => {"
+                        + "if (req.url === '/ready') { res.writeHead(200); res.end('ready'); return; }"
+                        + "if (req.url === '/echo') { res.writeHead(200); res.end('alive'); return; }"
+                        + "res.writeHead(404); res.end('missing');"
+                        + "});"
+                        + "server.listen(port, '127.0.0.1');"
+
+                    let rec waitUntilDown attempts =
+                        async {
+                            let! alive = fetchOk echoUrl |> Async.AwaitPromise
+
+                            if not alive then
+                                return true
+                            elif attempts <= 0 then
+                                return false
+                            else
+                                do! sleep 50 |> Async.AwaitPromise
+                                return! waitUntilDown (attempts - 1)
+                        }
+
+                    try
+                        let hostSpec =
+                            { ProcessHostSpec.create "host-a" "node" with
+                                Args = [ "-e"; script ]
+                                Env = [ "HOST_PORT", string port ]
+                                ReadinessUrl = Some readyUrl
+                                ReadinessAttempts = Some 40
+                                ReadinessIntervalMillis = Some 50 }
+
+                        let killProperty =
+                            property "process-host-kill-fault" {
+                                processHost hostSpec
+
+                                workload (fun ctx ->
+                                    async {
+                                        let! aliveBefore = fetchOk echoUrl |> Async.AwaitPromise
+                                        do! WorkloadContext.killHost "host-a" ctx
+                                        let! downAfter = waitUntilDown 20
+                                        return aliveBefore && downAfter
+                                    })
+
+                                verify (fun v ->
+                                    [ v.Expect.WorkloadResult "host was killed" true
+                                      v.Trace.SpanExists
+                                          "host kill span emitted"
+                                          "verification.host.kill"
+                                          [ "host.name", "host-a"; "verification.signal", "SIGKILL" ] ])
+                            }
+
+                        let! report =
+                            killProperty.RunProperty
+                                { Root = root
+                                  ProofFilter = None
+                                  TrialId = Some "process-host-kill-trial"
+                                  Preserve = false
+                                  Seed = 1 }
+                                "fault-proof"
+
+                        check "killHost property passes" report.Passed
+
+                        let undeclaredFault =
+                            property "undeclared-process-host-kill" {
+                                workload (fun ctx ->
+                                    async {
+                                        do! ctx.Faults.KillHost "missing"
+                                        return true
+                                    })
+
+                                verify (fun v -> [ v.Expect.WorkloadResult "not reached" true ])
+                            }
+
+                        let! undeclaredReport =
+                            undeclaredFault.RunProperty
+                                { Root = root
+                                  ProofFilter = None
+                                  TrialId = Some "undeclared-process-host-kill-trial"
+                                  Preserve = false
+                                  Seed = 1 }
+                                "fault-proof"
+
+                        check "undeclared killHost fails the workload" undeclaredReport.WorkloadFailed
                     finally
                         rmSync fs root
                 })

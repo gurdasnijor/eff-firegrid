@@ -190,22 +190,26 @@ module DurableSemanticsProof =
             })
 
     let tier1 =
-        propertyWithVerifiers "durable-semantics-tier1" runWorkload (fun v ->
-            [ v.Expect.Workload "activity replay" (fun result -> result.ActivityReplay)
-              v.Expect.Workload "event replay" (fun result -> result.EventReplay)
-              v.Expect.Workload "fan-out/fan-in replay" (fun result -> result.FanOutReplay)
-              v.Expect.Workload "replay laws" (fun result -> result.ReplayLaws)
-              v.Expect.Workload "substrate naming" (fun result -> result.SubstrateNaming)
-              v.Trace.SpanExists
-                  "runner trace evidence is queryable"
-                  "proof.durable_semantics.completed"
-                  [ "proof.property", "durable-semantics-tier1" ]
-              v.Trace.Operation
-                  "durable operation was recorded"
-                  ({ TraceOperationMatch.named "durable.replay.laws" with
-                      Status = Some "ok"
-                      OutputContains = [ "ActivityReplay"; "ReplayLaws" ]
-                      Count = Some 1 }) ])
+        property "durable-semantics-tier1" {
+            workload runWorkload
+
+            verify (fun v ->
+                [ v.Expect.Workload "activity replay" (fun result -> result.ActivityReplay)
+                  v.Expect.Workload "event replay" (fun result -> result.EventReplay)
+                  v.Expect.Workload "fan-out/fan-in replay" (fun result -> result.FanOutReplay)
+                  v.Expect.Workload "replay laws" (fun result -> result.ReplayLaws)
+                  v.Expect.Workload "substrate naming" (fun result -> result.SubstrateNaming)
+                  v.Trace.SpanExists
+                      "runner trace evidence is queryable"
+                      "proof.durable_semantics.completed"
+                      [ "proof.property", "durable-semantics-tier1" ]
+                  v.Trace.Operation
+                      "durable operation was recorded"
+                      ({ TraceOperationMatch.named "durable.replay.laws" with
+                          Status = Some "ok"
+                          OutputContains = [ "ActivityReplay"; "ReplayLaws" ]
+                          Count = Some 1 }) ])
+        }
 
     let proof =
         proof "durable-semantics" {

@@ -15,8 +15,13 @@
 #load "../src/S2/Cli.fs"
 #load "../src/S2/Patterns.fs"
 #load "../src/Proofs/Proof.fs"
+#load "../src/Proofs/Reports.fs"
 #load "../src/Proofs/TraceSql.fs"
 #load "../src/Proofs/TraceProof.fs"
+#load "../src/Proofs/Expect.fs"
+#load "../src/Proofs/TraceExpect.fs"
+#load "../src/Proofs/Verification.fs"
+#load "../src/Proofs/Property.fs"
 
 open Fable.Core
 open Fable.Core.JsInterop
@@ -94,6 +99,34 @@ let basinName = "test-basin-885234"
 
 let suite =
     async {
+        do!
+            test
+                "proof authoring: property builder guardrails"
+                (async {
+                    let runWorkload (_ctx: WorkloadContext) = async { return 42 }
+
+                    let built =
+                        property "builder-property" {
+                            workload runWorkload
+
+                            verify (fun v -> [ v.Expect.WorkloadResult "answer" 42 ])
+                        }
+
+                    check "property builder creates runnable property" (built.Name = "builder-property")
+
+                    let direct =
+                        propertyWithChecks "direct-property" runWorkload [ Expect.workloadResult "answer" 42 ]
+
+                    check "propertyWithChecks remains available" (direct.Name = "direct-property")
+
+                    checkThrows "property builder requires workload" "must declare a workload" (fun () ->
+                        property "missing-workload" { verify [ Expect.workload "never reached" (fun () -> true) ] }
+                        |> ignore)
+
+                    checkThrows "property builder requires verifier" "must declare at least one verifier" (fun () ->
+                        property "missing-verifier" { workload runWorkload } |> ignore)
+                })
+
         do!
             test
                 "proof traces: trace SQL guardrails"

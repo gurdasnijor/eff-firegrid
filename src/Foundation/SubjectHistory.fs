@@ -137,6 +137,9 @@ module SubjectHistory =
                 let mutable next = seqNumber from
                 let target = versionNumber until
 
+                if target < next then
+                    failwithf "target version %d is before start seq %d" target next
+
                 while next < target do
                     let! item = tryNext cursor
 
@@ -144,8 +147,13 @@ module SubjectHistory =
                     | Error error -> failwith error
                     | Ok None -> failwithf "cursor ended at %d before target %d" next target
                     | Ok(Some record) ->
+                        let actual = seqNumber record.Seq
+
+                        if actual <> next then
+                            failwithf "cursor returned seq %d while folding seq %d" actual next
+
                         state <- apply state record
-                        next <- seqNumber record.Seq + 1L
+                        next <- actual + 1L
 
                 let result = state, Version next
                 closing <- true

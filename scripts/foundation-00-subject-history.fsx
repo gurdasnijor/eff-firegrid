@@ -161,8 +161,8 @@ let main =
                         match sameBody with
                         | Error(SubjectHistory.AppendFailure.Conflict details) ->
                             Proof.check
-                                "same-body stale append still conflicts"
-                                (details.Actual = SubjectHistory.Version 1L)
+                                "same-body stale append still conflicts with expected/actual versions"
+                                (details.Expected = stale && details.Actual = SubjectHistory.Version 1L)
 
                             Proof.check
                                 "same-body conflict exposes winning record"
@@ -182,14 +182,34 @@ let main =
 
                         match conflict with
                         | Error(SubjectHistory.AppendFailure.Conflict details) ->
-                            Proof.check "different stale append conflicts" (details.Actual = SubjectHistory.Version 1L)
+                            Proof.check
+                                "different stale append conflicts with expected/actual versions"
+                                (details.Expected = stale && details.Actual = SubjectHistory.Version 1L)
 
                             Proof.check
                                 "conflict exposes winning record"
                                 (match details.Conflicting with
-                                 | SubjectHistory.ConflictRecord.Found record -> record.Body = Started "invoice-123"
+                                 | SubjectHistory.ConflictRecord.Found record ->
+                                     record.Seq = SubjectHistory.Seq 0L && record.Body = Started "invoice-123"
                                  | _ -> false)
                         | other -> Proof.check (sprintf "unexpected conflict outcome: %A" other) false
+                    })
+
+            do!
+                Proof.section
+                    "typed cursor"
+                    (async {
+                        let! cursor = SubjectHistory.openCursor basin WorkRecord.codec subject (SubjectHistory.Seq 0L)
+
+                        let! first = SubjectHistory.tryNext cursor
+                        do! SubjectHistory.closeCursor cursor
+
+                        Proof.check
+                            "openCursor and tryNext expose first typed record"
+                            (match first with
+                             | Ok(Some record) ->
+                                 record.Seq = SubjectHistory.Seq 0L && record.Body = Started "invoice-123"
+                             | _ -> false)
                     })
 
             do!
@@ -220,6 +240,12 @@ let main =
                                 WorkSnapshot.apply
 
                         Proof.check "fold applies through append tail" (applied = after)
+
+                        Proof.check
+                            "fold applies records in order through target version"
+                            (snapshot.Status = Waiting
+                             && snapshot.Completed.TryFind "reserve" = Some "reservation-777"
+                             && snapshot.PendingTimers.TryFind "timeout" = Some "2026-06-28T00:00:00Z")
 
                         Proof.check
                             "fold records completed operation"

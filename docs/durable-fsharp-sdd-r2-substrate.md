@@ -54,7 +54,9 @@ Implemented slices:
   `HistoryEntry<StepRecord>` commits: activity calls, timer creation,
   cancellation, deterministic time, replay-safe logging, and associated
   commands. The compiled proof covers duplicate suppression and a real fenced
-  S2 commit/readback path.
+  S2 commit/readback path. `StepRecordCodec` is the shared length-prefixed text
+  codec for those records, with proof coverage for all cases, separator-bearing
+  payloads, and malformed input rejection.
 
 Next slices, still one layer + proof at a time:
 

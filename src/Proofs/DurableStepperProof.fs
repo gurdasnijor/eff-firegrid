@@ -1,6 +1,5 @@
 namespace Eff.Proofs
 
-open System
 open Eff
 open Eff.Foundation.Durable
 
@@ -11,85 +10,10 @@ module DurableStepperProof =
           TimerDispatchOnce: bool
           WhenAnyCancelsLosingTimer: bool
           TimeLogTimerSequence: bool
+          StepRecordCodecRoundTrips: bool
+          StepRecordCodecRejectsMalformed: bool
           S2CommitPersistsPlan: bool
           S2WaitingPlanDoesNotCommit: bool }
-
-    module private StepRecordCodec =
-        let private op (OpId value) = string value
-
-        let private opOf (text: string) =
-            match Int32.TryParse text with
-            | true, value -> OpId value
-            | false, _ -> failwith ("bad op id: " + text)
-
-        let private eventToText =
-            function
-            | ActivityCalled(opId, activity) ->
-                sprintf "event|activity-called|%s|%s|%s" (op opId) activity.Name activity.Input
-            | ActivityCompleted(opId, value) -> sprintf "event|activity-completed|%s|%s" (op opId) value
-            | CurrentTimeRecorded(opId, timestamp) -> sprintf "event|time|%s|%d" (op opId) timestamp
-            | LogEmitted(opId, message) -> sprintf "event|log|%s|%s" (op opId) message
-            | TimerCreated(opId, deadline) -> sprintf "event|timer-created|%s|%d" (op opId) deadline
-            | TimerFired opId -> sprintf "event|timer-fired|%s" (op opId)
-            | TimerCanceled opId -> sprintf "event|timer-canceled|%s" (op opId)
-            | SignalReceived(opId, name, payload) -> sprintf "event|signal|%s|%s|%s" (op opId) name payload
-
-        let private eventOf =
-            function
-            | [ "event"; "activity-called"; opId; name; input ] ->
-                ActivityCalled(opOf opId, { Name = name; Input = input })
-            | [ "event"; "activity-completed"; opId; value ] -> ActivityCompleted(opOf opId, value)
-            | [ "event"; "time"; opId; timestamp ] -> CurrentTimeRecorded(opOf opId, int64 timestamp)
-            | [ "event"; "log"; opId; message ] -> LogEmitted(opOf opId, message)
-            | [ "event"; "timer-created"; opId; deadline ] -> TimerCreated(opOf opId, int64 deadline)
-            | [ "event"; "timer-fired"; opId ] -> TimerFired(opOf opId)
-            | [ "event"; "timer-canceled"; opId ] -> TimerCanceled(opOf opId)
-            | [ "event"; "signal"; opId; name; payload ] -> SignalReceived(opOf opId, name, payload)
-            | parts -> failwith ("bad event record: " + String.concat "|" parts)
-
-        let private commandToText =
-            function
-            | CallActivity(opId, activity) -> sprintf "command|activity|%s|%s|%s" (op opId) activity.Name activity.Input
-            | ScheduleTimer(opId, deadline) -> sprintf "command|timer|%s|%d" (op opId) deadline
-            | CancelTimer opId -> sprintf "command|cancel-timer|%s" (op opId)
-            | WriteLog(opId, message) -> sprintf "command|log|%s|%s" (op opId) message
-
-        let private commandOf =
-            function
-            | [ "command"; "activity"; opId; name; input ] -> CallActivity(opOf opId, { Name = name; Input = input })
-            | [ "command"; "timer"; opId; deadline ] -> ScheduleTimer(opOf opId, int64 deadline)
-            | [ "command"; "cancel-timer"; opId ] -> CancelTimer(opOf opId)
-            | [ "command"; "log"; opId; message ] -> WriteLog(opOf opId, message)
-            | parts -> failwith ("bad command record: " + String.concat "|" parts)
-
-        let private recordToText =
-            function
-            | HistoryEvent event -> eventToText event
-            | Command command -> commandToText command
-
-        let private recordOf (text: string) =
-            let parts = text.Split('|') |> Array.toList
-
-            match parts with
-            | "event" :: _ -> HistoryEvent(eventOf parts)
-            | "command" :: _ -> Command(commandOf parts)
-            | _ -> failwith ("bad step record: " + text)
-
-        let encode =
-            function
-            | Incoming record -> "in|" + recordToText record
-            | Outgoing record -> "out|" + recordToText record
-
-        let decode (body: string) =
-            try
-                if body.StartsWith("in|", StringComparison.Ordinal) then
-                    Ok(Incoming(recordOf (body.Substring 3)))
-                elif body.StartsWith("out|", StringComparison.Ordinal) then
-                    Ok(Outgoing(recordOf (body.Substring 4)))
-                else
-                    Error("bad step history wrapper: " + body)
-            with error ->
-                Error error.Message
 
     let private commitRecords =
         function
@@ -215,6 +139,41 @@ module DurableStepperProof =
         && commitRecords timerPlan = [ Incoming(HistoryEvent(TimerCreated(OpId 2, 1010L)))
                                        Outgoing(Command(ScheduleTimer(OpId 2, 1010L))) ]
 
+    let private checkStepRecordCodecRoundTrips () =
+        let records =
+            [ Incoming(
+                  HistoryEvent(
+                      ActivityCalled(
+                          OpId 7,
+                          { Name = "act|name"
+                            Input = "input:with|pipes" }
+                      )
+                  )
+              )
+              Incoming(HistoryEvent(ActivityCompleted(OpId 7, "done|value")))
+              Incoming(HistoryEvent(CurrentTimeRecorded(OpId 8, 123456789L)))
+              Incoming(HistoryEvent(LogEmitted(OpId 9, "log:message|with separators")))
+              Incoming(HistoryEvent(TimerCreated(OpId 10, 444L)))
+              Incoming(HistoryEvent(TimerFired(OpId 10)))
+              Incoming(HistoryEvent(TimerCanceled(OpId 11)))
+              Incoming(HistoryEvent(SignalReceived(OpId 12, "sig|nal", "pay:load|x")))
+              Outgoing(Command(CallActivity(OpId 13, { Name = "call|x"; Input = "body:1" })))
+              Outgoing(Command(ScheduleTimer(OpId 14, 999L)))
+              Outgoing(Command(CancelTimer(OpId 15)))
+              Outgoing(Command(WriteLog(OpId 16, "write|log:message"))) ]
+
+        records
+        |> List.forall (fun record -> StepRecordCodec.decode (StepRecordCodec.encode record) = Ok record)
+
+    let private checkStepRecordCodecRejectsMalformed () =
+        [ ""
+          "event.timer-created|1:0"
+          "in|event.timer-created|1:0"
+          "out|command.timer|1:x"
+          "in|event.unknown|1:0"
+          "in|event.log|1:03:abc1:z" ]
+        |> List.forall (StepRecordCodec.decode >> Result.isError)
+
     let private runWorkload ctx =
         ProofOperation.run
             ctx
@@ -271,6 +230,8 @@ module DurableStepperProof =
                       TimerDispatchOnce = checkTimerDispatchOnce ()
                       WhenAnyCancelsLosingTimer = checkWhenAnyCancelsLosingTimer ()
                       TimeLogTimerSequence = checkTimeLogTimerSequence ()
+                      StepRecordCodecRoundTrips = checkStepRecordCodecRoundTrips ()
+                      StepRecordCodecRejectsMalformed = checkStepRecordCodecRejectsMalformed ()
                       S2CommitPersistsPlan = s2CommitPersistsPlan
                       S2WaitingPlanDoesNotCommit = s2WaitingPlanDoesNotCommit }
 
@@ -280,6 +241,7 @@ module DurableStepperProof =
                         [ "proof.property", "durable-stepper"
                           "stepper.activity", string result.ActivityDispatchOnce
                           "stepper.timer", string result.TimerDispatchOnce
+                          "stepper.codec", string result.StepRecordCodecRoundTrips
                           "stepper.s2_commit", string result.S2CommitPersistsPlan ]
 
                 return result
@@ -297,6 +259,10 @@ module DurableStepperProof =
                   v.Expect.Workload "timer dispatch is committed once" (fun result -> result.TimerDispatchOnce)
                   v.Expect.Workload "when-any cancels losing timer" (fun result -> result.WhenAnyCancelsLosingTimer)
                   v.Expect.Workload "time log timer sequence is planned" (fun result -> result.TimeLogTimerSequence)
+                  v.Expect.Workload "step record codec round-trips all cases" (fun result ->
+                      result.StepRecordCodecRoundTrips)
+                  v.Expect.Workload "step record codec rejects malformed input" (fun result ->
+                      result.StepRecordCodecRejectsMalformed)
                   v.Expect.Workload "S2 commit persists planned records" (fun result -> result.S2CommitPersistsPlan)
                   v.Expect.Workload "waiting plan does not commit" (fun result -> result.S2WaitingPlanDoesNotCommit)
                   v.Trace.SpanExists
@@ -310,6 +276,7 @@ module DurableStepperProof =
                           OutputContains =
                               [ "ActivityDispatchOnce"
                                 "FanOutDispatchesMissingOnly"
+                                "StepRecordCodecRoundTrips"
                                 "S2CommitPersistsPlan" ]
                           Count = Some 1 }) ])
         }

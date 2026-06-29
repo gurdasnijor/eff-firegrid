@@ -7,12 +7,19 @@ module Program =
         printfn "eff-firegrid"
         printfn ""
         printfn "Commands:"
-        printfn "  proofs       Run the compiled validation proof suite"
-        printfn "  proofs list  List registered proof names"
+        printfn "  proofs list               List registered proof names"
+        printfn "  proofs run [--proof name] Run the compiled validation proof suite"
 
-    let private listProofs () =
-        for proof in Registry.all do
-            printfn "%s" proof.Name
+    let private listProofs () = Runner.listProofs Registry.all
+
+    let rec private parseRunArgs config args =
+        match args with
+        | [] -> config
+        | "--proof" :: value :: rest -> parseRunArgs { config with ProofFilter = Some value } rest
+        | "--trial-id" :: value :: rest -> parseRunArgs { config with TrialId = Some value } rest
+        | "--preserve" :: rest -> parseRunArgs { config with Preserve = true } rest
+        | "--seed" :: value :: rest -> parseRunArgs { config with Seed = int value } rest
+        | _ :: rest -> parseRunArgs config rest
 
     [<EntryPoint>]
     let main argv =
@@ -20,8 +27,11 @@ module Program =
         | "proofs" :: "list" :: _ ->
             listProofs ()
             0
-        | "proofs" :: _ ->
-            Harness.runProofs Registry.all
+        | "proofs" :: "run" :: args ->
+            Runner.run (parseRunArgs Runner.defaultConfig args) Registry.all
+            0
+        | "proofs" :: args ->
+            Runner.run (parseRunArgs Runner.defaultConfig args) Registry.all
             0
         | _ ->
             usage ()

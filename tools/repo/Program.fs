@@ -140,7 +140,7 @@ module Program =
             | None -> []
 
         run "dotnet" [ "fable"; "eff-firegrid.fsproj"; "--outDir"; "build_proofs"; "--noCache" ]
-        runWithEnv "node" [ "build_proofs/src/Program.js"; "proofs" ] env
+        runWithEnv "node" [ "build_proofs/src/Program.js"; "proofs"; "run" ] env
 
     let test () =
         run "dotnet" [ "fable"; "tests/Suite.fsx"; "--outDir"; "build_test" ]

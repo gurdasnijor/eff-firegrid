@@ -2,7 +2,23 @@
 
 ## Status
 
-Proposed, with Milestone 0 implementation started.
+Proposed, with Milestone 0 implemented and Milestone 1 started.
+
+Current implementation on the durable runner branch:
+
+- compiled proof/property declarations (`Proof.fs`, `Property.fs`, `ProofBuilder.fs`)
+- typed workload verifiers (`Expect.fs`)
+- trace verifiers backed by `TraceSql` / `chdb` (`TraceExpect.fs`)
+- runner-owned trial roots, `spans.jsonl`, and `report.json` (`Reports.fs`, `Runner.fs`)
+- CLI path through `proofs run`, `proofs list`, and `npm run proofs -- --proof <filter>`
+- current durable replay checks migrated out of `Harness.fs` into one property
+
+Still pending from Milestone 1:
+
+- real `s2 lite` lifecycle
+- process-host resources and readiness probes
+- OTLP receiver/exporter; the first runner writes JSONL spans directly
+- richer report schema and replay command support
 
 This SDD replaces the earlier custom in-memory evidence model. The proof
 runner should use the same observability substrate the production system needs:

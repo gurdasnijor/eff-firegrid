@@ -325,18 +325,9 @@ let suite =
 
                                 verify (fun v ->
                                     [ v.Expect.WorkloadResult "host responded" true
-                                      v.Trace.SpanExists
-                                          "host start span emitted"
-                                          "verification.host.start"
-                                          [ "host.name", "host-a" ]
-                                      v.Trace.SpanExists
-                                          "host ready span emitted"
-                                          "verification.host.ready"
-                                          [ "host.name", "host-a" ]
-                                      v.Trace.SpanExists
-                                          "host stop span emitted"
-                                          "verification.host.stop"
-                                          [ "host.name", "host-a" ] ])
+                                      v.Host.Started "host-a"
+                                      v.Host.Ready "host-a"
+                                      v.Host.Stopped "host-a" ])
                             }
 
                         let! report =
@@ -428,10 +419,8 @@ let suite =
 
                                 verify (fun v ->
                                     [ v.Expect.WorkloadResult "host was killed" true
-                                      v.Trace.SpanExists
-                                          "host kill span emitted"
-                                          "verification.host.kill"
-                                          [ "host.name", "host-a"; "verification.signal", "SIGKILL" ] ])
+                                      v.Fault.HostKilled "host-a"
+                                      v.Fault.HostKillAccepted "host-a" ])
                             }
 
                         let! report =

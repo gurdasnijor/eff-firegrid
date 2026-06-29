@@ -10,6 +10,8 @@ Current implementation on `main` and the ergonomic proof-runner branch:
 - compiled proof/property declarations (`Proof.fs`, `Property.fs`, `ProofBuilder.fs`)
 - typed workload verifiers (`Expect.fs`)
 - trace verifiers backed by `TraceSql` / `chdb` (`TraceExpect.fs`, `TraceProof.fs`)
+- typed host/fault verifier factories (`v.Host.*`, `v.Fault.*`) layered over
+  trace-backed evidence
 - read-only trace proof normalization: one SELECT/WITH query, trial-scoped
   `trial_spans` / `verification_operations` macros, no arbitrary external
   readers, and no tautology-only `SELECT 1` proofs
@@ -533,11 +535,22 @@ type CompletedTrial<'result> =
 type Check<'result> =
     { Name: string
       Run: CompletedTrial<'result> -> Async<Result<unit, string>> }
+
+type Verifiers<'result> =
+    { Expect: ExpectVerifiers<'result>
+      Trace: TraceVerifiers<'result>
+      Host: HostVerifiers<'result>
+      Fault: FaultVerifiers<'result> }
 ```
 
 Properties declare `s2LiveFromEnv` or `s2Lite` when they need S2. Workloads
 use `WorkloadContext.requireS2` so undeclared S2 access fails at the proof
 boundary instead of receiving an implicit fake resource.
+
+Host and fault verifiers are typed wrappers over trace evidence, not a second
+evidence path. For example, `v.Fault.HostKillAccepted "host-a"` checks for a
+`verification.host.kill` span with `host.name=host-a`, `SIGKILL`, and
+`verification.accepted=true`.
 
 ## Runner Order
 

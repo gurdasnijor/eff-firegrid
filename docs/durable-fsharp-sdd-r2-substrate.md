@@ -112,12 +112,21 @@ Implemented slices:
   workflow one narrow tick at a time, host waiting before fold admission,
   absence of direct adapter completion writes, restart after inbox publish
   before fold, and duplicate completion-envelope suppression.
+- **Tier 2.8 composed host tick.**
+  `DurableHost.runOwnedTick` / `claimAndRunTick` are now the first ergonomic
+  host operation over the proven lower layers. A tick claims or uses an owned
+  instance, folds inbox arrivals, steps workflow replay, and dispatches
+  activity commands, returning a typed `Completed`, `Waiting`, `Advanced`,
+  `Deposed`, or `Failed` result with a compact report. The compiled proof
+  covers claimed-owner reporting, repeated ticks completing a two-activity
+  workflow, retry after step-commit-before-dispatch, typed missing-handler
+  failure, and stale-owner rejection.
 
 Next slices, still one layer + proof at a time:
 
-- introduce a composed host tick surface that claims an instance and executes
-  the proven sequence `fold inbox -> step workflow -> dispatch activities`
-  behind one ergonomic operation result.
+- implement the timer adapter for committed `ScheduleTimer` / `CancelTimer`
+  commands, publishing timer firings through the same inbox/fold path with
+  proof for deadline, cancellation, retry, and replay behavior.
 
 One surprising constraint surfaced from your own code — see §1.
 

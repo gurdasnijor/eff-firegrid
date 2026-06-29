@@ -72,6 +72,8 @@ Implemented and proof-backed today:
 - `InboxFold.runOnce` admits fresh `{key}/in` arrivals into the fenced log,
   records inbox cursor/highwater progress, and folds activity completions into
   replay history.
+- `DurableHost.runOwnedTick` / `claimAndRunTick` compose one host operation:
+  fold inbox, step workflow replay, and dispatch committed activity commands.
 - The compiled proof runner validates the above against pure laws and ephemeral
   S2 streams.
 
@@ -304,7 +306,23 @@ Proof obligations:
 - restart after inbox publish before fold still advances
 - duplicate completion envelopes are ignored by source highwater
 
-### L5 Timer Adapter
+### L5 Composed Host Tick
+
+Implemented: expose `DurableHost.runOwnedTick` and
+`DurableHost.claimAndRunTick` as the first composed host operation. The tick
+claims or uses an owned instance, folds inbox arrivals, steps deterministic
+workflow replay, and dispatches activity commands in one typed result.
+
+Proof obligations:
+
+- claim-and-run reports the claimed key and fence
+- repeated ticks complete a two-activity workflow
+- retry after step commit but before activity dispatch still dispatches the
+  pending command while the workflow is waiting
+- missing activity handlers surface as typed tick failures
+- stale owners cannot advance a composed tick
+
+### L6 Timer Adapter
 
 Consume `ScheduleTimer` and `CancelTimer` commands and admit `TimerFired` when
 the deadline is reached.
@@ -316,7 +334,7 @@ Proof obligations:
 - retry does not create two effective timer firings
 - timer outcomes replay deterministically from history
 
-### L6 Durable Client
+### L7 Durable Client
 
 Expose `Start`, `RaiseSignal`, and `GetStatus`.
 
@@ -327,7 +345,7 @@ Proof obligations:
 - raise-signal admission is durable before acknowledgement
 - status is derived from durable history, not volatile host state
 
-### L7 Ergonomic Host
+### L8 Ergonomic Host
 
 Expose `DurableRuntime.create`, `Host.RunOnce`, `Host.RunUntilIdle`, and then
 `Host.RunForever`.

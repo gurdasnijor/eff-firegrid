@@ -6,4 +6,5 @@ module Registry =
           FoundationStateViewProof.proof
           FoundationKvStoreProof.proof
           DurableSemanticsProof.proof
-          DurableS2SubstrateProof.proof ]
+          DurableS2SubstrateProof.proof
+          DurableStepperProof.proof ]

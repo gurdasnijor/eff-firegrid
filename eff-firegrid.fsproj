@@ -22,6 +22,7 @@
     <Compile Include="src/Foundation/Durable/Semantics.fs" />
     <Compile Include="src/Foundation/Durable/Api.fs" />
     <Compile Include="src/Foundation/Durable/S2Substrate.fs" />
+    <Compile Include="src/Foundation/Durable/Stepper.fs" />
     <Compile Include="src/Proofs/Proof.fs" />
     <Compile Include="src/Proofs/Reports.fs" />
     <Compile Include="src/Proofs/S2Lite.fs" />
@@ -40,6 +41,7 @@
     <Compile Include="src/Proofs/Runner.fs" />
     <Compile Include="src/Proofs/DurableSemanticsProof.fs" />
     <Compile Include="src/Proofs/DurableS2SubstrateProof.fs" />
+    <Compile Include="src/Proofs/DurableStepperProof.fs" />
     <Compile Include="src/Proofs/Registry.fs" />
     <Compile Include="src/Program.fs" />
   </ItemGroup>

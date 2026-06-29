@@ -90,8 +90,11 @@ module TraceSql =
             return count > 0
         }
 
+    let private sqlString (value: string) =
+        "'" + value.Replace("\\", "\\\\").Replace("'", "\\'") + "'"
+
     let private attributeField (key: string) =
-        "attributes.`" + key.Replace("`", "``") + "`"
+        "JSONExtractString(toJSONString(attributes), " + sqlString key + ")"
 
     let spanExists spanName attributes =
         let attributeClauses =

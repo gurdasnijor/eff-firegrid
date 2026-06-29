@@ -47,14 +47,14 @@ module TraceProof =
 (
   SELECT
     trial_id,
-    attributes.`firegrid.client.id` AS client_id,
-    attributes.`firegrid.operation.id` AS operation_id,
-    attributes.`firegrid.operation.name` AS operation,
-    attributes.`firegrid.operation.key` AS operation_key,
-    attributes.`firegrid.operation.input.json` AS input_json,
-    attributes.`firegrid.operation.output.json` AS output_json,
-    attributes.`firegrid.operation.status` AS status,
-    attributes.`firegrid.operation.failure.kind` AS failure_kind
+    JSONExtractString(toJSONString(attributes), 'firegrid.client.id') AS client_id,
+    JSONExtractString(toJSONString(attributes), 'firegrid.operation.id') AS operation_id,
+    JSONExtractString(toJSONString(attributes), 'firegrid.operation.name') AS operation,
+    JSONExtractString(toJSONString(attributes), 'firegrid.operation.key') AS operation_key,
+    JSONExtractString(toJSONString(attributes), 'firegrid.operation.input.json') AS input_json,
+    JSONExtractString(toJSONString(attributes), 'firegrid.operation.output.json') AS output_json,
+    JSONExtractString(toJSONString(attributes), 'firegrid.operation.status') AS status,
+    JSONExtractString(toJSONString(attributes), 'firegrid.operation.failure.kind') AS failure_kind
   FROM trial_spans
   WHERE name = 'verification.operation'
 )
@@ -102,7 +102,7 @@ module TraceProof =
         "'" + value.Replace("\\", "\\\\").Replace("'", "\\'") + "'"
 
     let private attributeField (key: string) =
-        "attributes.`" + key.Replace("`", "``") + "`"
+        "JSONExtractString(toJSONString(attributes), " + sqlString key + ")"
 
     let private attributeEquals key value =
         sprintf "%s = %s" (attributeField key) (sqlString value)

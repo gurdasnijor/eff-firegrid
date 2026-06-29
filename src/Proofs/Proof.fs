@@ -10,7 +10,19 @@ type WorkloadContext =
       Root: string
       Traces: TraceStore
       Seed: int
+      NextOperationId: unit -> int
       EmitSpan: string -> (string * string) list -> Async<unit> }
+
+type ProofOperationOptions =
+    { ClientId: string option
+      OperationId: string option
+      Key: string option }
+
+module ProofOperationOptions =
+    let empty =
+        { ClientId = None
+          OperationId = None
+          Key = None }
 
 type CompletedTrial<'result> =
     { ProofName: string

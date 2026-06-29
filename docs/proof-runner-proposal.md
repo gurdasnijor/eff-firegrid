@@ -2,13 +2,19 @@
 
 ## Status
 
-Proposed, with Milestone 0 implemented and Milestone 1 started.
+Proposed, with Milestone 0 implemented and Milestone 1 expanded into the first
+ergonomic verification layer.
 
-Current implementation on the durable runner branch:
+Current implementation on `main` and the ergonomic proof-runner branch:
 
 - compiled proof/property declarations (`Proof.fs`, `Property.fs`, `ProofBuilder.fs`)
 - typed workload verifiers (`Expect.fs`)
-- trace verifiers backed by `TraceSql` / `chdb` (`TraceExpect.fs`)
+- trace verifiers backed by `TraceSql` / `chdb` (`TraceExpect.fs`, `TraceProof.fs`)
+- read-only trace proof normalization: one SELECT/WITH query, trial-scoped
+  `trial_spans` / `verification_operations` macros, no arbitrary external
+  readers, and no tautology-only `SELECT 1` proofs
+- canonical workload operation spans through `ProofOperation.run`
+- ergonomic verifier factories through `Verification.fs`
 - runner-owned trial roots, `spans.jsonl`, and `report.json` (`Reports.fs`, `Runner.fs`)
 - CLI path through `proofs run`, `proofs list`, and `npm run proofs -- --proof <filter>`
 - current durable replay checks migrated out of `Harness.fs` into one property
@@ -90,8 +96,10 @@ The system has four layers:
 3. **Proof runner resources** in `src/Proofs`. The runner starts S2, starts
    host processes, injects env, records runner lifecycle spans, runs workloads,
    runs negative controls, writes reports, and tears down resources.
-4. **Trace verification** in `src/Proofs/TraceSql.fs`. Verifiers query exported
-   trace files or tables through `chdb`.
+4. **Trace verification** in `src/Proofs/TraceSql.fs`, `TraceProof.fs`, and
+   `Verification.fs`. Verifiers query exported trace files or tables through
+   `chdb`; authored SQL goes through read-only normalization and trial-scoped
+   trace macros.
 
 There is one evidence path:
 
@@ -254,6 +262,21 @@ module TraceSql =
 
 The implementation can bind to `chdb` from Fable using small interop functions.
 
+Trace proofs sit above raw SQL:
+
+```fsharp
+module TraceProof =
+    val sql: name: string -> body: string -> TraceProof
+    val operation: name: string -> matchSpec: TraceOperationMatch -> TraceProof
+    val asCheck: TraceProof -> Check<'result>
+```
+
+`TraceProof.sql` rejects statements that are not a single read-only SELECT/WITH
+query, rejects proofs that do not reference `trial_spans` or
+`verification_operations`, and blocks arbitrary external table readers. This
+does not make malicious proof code impossible, but it prevents the common weak
+proof failure mode where a verifier passes without querying the trial evidence.
+
 ## Authoring Shape
 
 Use shallow computation expressions. A proof is a compiled F# value; a property
@@ -261,49 +284,47 @@ has resources, workload, and verifiers.
 
 ```fsharp
 let storeObjectSerialization =
+    let workload ctx =
+        ProofOperation.run
+            ctx
+            "store.counter.add-concurrent"
+            {| Key = "counter-1"; Adds = [ 5; 7 ] |}
+            { ProofOperationOptions.empty with Key = Some "counter-1" }
+            (async {
+                let counter =
+                    Counter.create {
+                        Namespace = "object-serialization-" + ctx.TrialId
+                        Name = "counter"
+                        Key = "counter-1"
+                    }
+
+                let! results = Async.Parallel [ counter.Add 5; counter.Add 7 ]
+                let! value = counter.Value()
+
+                return
+                    {| CompletedCalls = results.Length
+                       MaxResult = Array.max results
+                       Value = value |}
+            })
+
     proof "store.object-serialization" {
         describedAs
             "Concurrent same-key object calls serialize through the S2-backed object log and do not lose writes."
 
         property (
-            property "store.object-serialization-proof" {
-                s2Lite LocalRoot
+            propertyWithVerifiers "store.object-serialization-proof" workload (fun v ->
+                [ v.Expect.WorkloadResult
+                      "final counter value"
+                      {| CompletedCalls = 2
+                         MaxResult = 12
+                         Value = 12 |}
 
-                workload (fun ctx ->
-                    async {
-                        let counter =
-                            Counter.create {
-                                Basin = ctx.S2.Basin
-                                Namespace = "object-serialization-" + ctx.TrialId
-                                Name = "counter"
-                                Key = "counter-1"
-                            }
-
-                        let! results =
-                            Async.Parallel
-                                [ counter.Add 5
-                                  counter.Add 7 ]
-
-                        let! value = counter.Value()
-
-                        return
-                            {| CompletedCalls = results.Length
-                               MaxResult = Array.max results
-                               Value = value |}
-                    })
-
-                verify [
-                    Expect.workloadResult
-                        {| CompletedCalls = 2
-                           MaxResult = 12
-                           Value = 12 |}
-
-                    TraceExpect.spanExists
-                        "object append happened"
-                        "object.append"
-                        [ "object.key", "counter-1" ]
-                ]
-            })
+                  v.Trace.Operation
+                      "counter operation recorded"
+                      (TraceOperationMatch.named "store.counter.add-concurrent"
+                       |> TraceOperationMatch.status "ok"
+                       |> TraceOperationMatch.outputContains "\"Value\":12"
+                       |> TraceOperationMatch.exactly 1) ]))
     }
 ```
 
@@ -526,18 +547,23 @@ Workload-result equality checks one outcome. It does not prove a concurrent
 history is legal. Operation history should be represented as spans using a
 stable schema.
 
-Required operation span attributes:
+Current operation span attributes:
 
 ```text
-eff.operation.id
-eff.operation.client_id
-eff.operation.name
-eff.operation.key
-eff.operation.input_json
-eff.operation.output_json
-eff.operation.error_json
-eff.operation.status
+firegrid.client.id
+firegrid.operation.id
+firegrid.operation.name
+firegrid.operation.key
+firegrid.operation.input.json
+firegrid.operation.output.json
+firegrid.operation.failure.kind
+firegrid.operation.failure.message
+firegrid.operation.status
 ```
+
+Workload code emits these spans with `ProofOperation.run`. Trace verifiers
+assert them with `v.Trace.Operation`, which expands to a query over the
+trial-scoped `trial_spans` view.
 
 The model interface should be defined before full checker implementation:
 

@@ -21,12 +21,14 @@ Current implementation on `main` and the ergonomic proof-runner branch:
   exposes `ctx.S2`, and emits `verification.s2.live.connected`
 - local `s2Lite` resource lifecycle: starts `s2 lite --local-root`, exposes
   `ctx.S2`, and emits `verification.s2.lite.started/stopped`
+- process-host resource lifecycle: starts declared commands, injects standard
+  env, waits for readiness, exposes `ctx.Hosts`, and emits
+  `verification.host.start/ready/stop`
 - CLI path through `proofs run`, `proofs list`, and `npm run proofs -- --proof <filter>`
 - current durable replay checks migrated out of `Harness.fs` into one property
 
 Still pending from Milestone 1:
 
-- process-host resources and readiness probes
 - OTLP receiver/exporter; the first runner writes JSONL spans directly
 - richer report schema and replay command support
 
@@ -352,21 +354,17 @@ let objectLiveFencing =
             property "store.object-live-fencing-proof" {
                 s2Lite LocalRoot
 
-                hosts [
-                    processHost "a" {
-                        command "pnpm"
-                        args [ "exec"; "tsx"; workerPath ]
-                        env "HOST_PORT" (string portA)
-                        readinessUrl (hostA + "/ready")
-                    }
+                processHost
+                    { ProcessHostSpec.create "a" "pnpm" with
+                        Args = [ "exec"; "tsx"; workerPath ]
+                        Env = [ "HOST_PORT", string portA ]
+                        ReadinessUrl = Some(hostA + "/ready") }
 
-                    processHost "b" {
-                        command "pnpm"
-                        args [ "exec"; "tsx"; workerPath ]
-                        env "HOST_PORT" (string portB)
-                        readinessUrl (hostB + "/ready")
-                    }
-                ]
+                processHost
+                    { ProcessHostSpec.create "b" "pnpm" with
+                        Args = [ "exec"; "tsx"; workerPath ]
+                        Env = [ "HOST_PORT", string portB ]
+                        ReadinessUrl = Some(hostB + "/ready") }
 
                 workload StoreObjectLiveFencing.run
 
@@ -752,7 +750,7 @@ Deliverables:
 1. proof and property CEs
 2. compiled proof registry
 3. basic runner CLI
-4. `s2LiveFromEnv` and local `s2Lite` resource lifecycle
+4. `s2LiveFromEnv`, local `s2Lite`, and process-host resource lifecycle
 5. workload result checks
 6. OTLP receiver/exporter writing `spans.jsonl`
 7. `TraceSql` backed by `chdb`

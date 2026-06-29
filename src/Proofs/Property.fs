@@ -17,13 +17,14 @@ module Property =
 
     type ResolvedResources =
         { S2: S2Resource option
+          Hosts: Map<string, HostResource>
           Releases: (unit -> Async<unit>) list }
 
     let private unsupportedResources resources =
         let unsupported =
             resources
             |> List.choose (function
-                | ProcessHost name -> Some(sprintf "processHost '%s' is not implemented yet" name)
+                | ProcessHost _ -> None
                 | S2LiveFromEnv
                 | S2Lite _ -> None)
 
@@ -35,10 +36,25 @@ module Property =
                 | _ -> false)
             |> List.length
 
-        if s2ResourceCount > 1 then
-            "only one S2 resource can be declared per property" :: unsupported
-        else
-            unsupported
+        let duplicateHosts =
+            resources
+            |> List.choose (function
+                | ProcessHost host -> Some host.Name
+                | _ -> None)
+            |> List.countBy id
+            |> List.choose (fun (name, count) ->
+                if count > 1 then
+                    Some(sprintf "processHost '%s' is declared more than once" name)
+                else
+                    None)
+
+        let unsupported =
+            if s2ResourceCount > 1 then
+                "only one S2 resource can be declared per property" :: unsupported
+            else
+                unsupported
+
+        unsupported @ duplicateHosts
 
     let private checkReport name result =
         match result with
@@ -71,7 +87,10 @@ module Property =
             return List.ofSeq reports
         }
 
-    let private emptyResources = { S2 = None; Releases = [] }
+    let private emptyResources =
+        { S2 = None
+          Hosts = Map.empty
+          Releases = [] }
 
     let private releaseResources resources =
         async {
@@ -105,7 +124,16 @@ module Property =
                         { resolved with
                             S2 = Some s2Lite.Resource
                             Releases = s2Lite.Stop :: resolved.Releases }
-                | ProcessHost _ -> ()
+                | ProcessHost host ->
+                    if resolved.Hosts |> Map.containsKey host.Name then
+                        failwithf "processHost '%s' is declared more than once" host.Name
+
+                    let! managed = ProcessHost.start store store.TrialId resolved.S2 host
+
+                    resolved <-
+                        { resolved with
+                            Hosts = resolved.Hosts |> Map.add managed.Resource.Name managed.Resource
+                            Releases = managed.Stop :: resolved.Releases }
 
             return resolved
         }
@@ -123,6 +151,7 @@ module Property =
           Traces = store
           Seed = seed
           S2 = resources.S2
+          Hosts = resources.Hosts
           NextOperationId = nextOperation
           EmitSpan = Reports.emitSpan store }
 

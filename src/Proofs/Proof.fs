@@ -16,12 +16,39 @@ type S2Resource =
 module S2Resource =
     let basin name resource = resource.Client |> S2.basin name
 
+type ProcessHostSpec =
+    { Name: string
+      Command: string
+      Args: string list
+      Cwd: string option
+      Env: (string * string) list
+      ReadinessUrl: string option
+      ReadinessAttempts: int option
+      ReadinessIntervalMillis: int option }
+
+module ProcessHostSpec =
+    let create name command =
+        { Name = name
+          Command = command
+          Args = []
+          Cwd = None
+          Env = []
+          ReadinessUrl = None
+          ReadinessAttempts = None
+          ReadinessIntervalMillis = None }
+
+type HostResource =
+    { Name: string
+      ProcessId: int
+      ReadinessUrl: string option }
+
 type WorkloadContext =
     { TrialId: string
       Root: string
       Traces: TraceStore
       Seed: int
       S2: S2Resource option
+      Hosts: Map<string, HostResource>
       NextOperationId: unit -> int
       EmitSpan: string -> (string * string) list -> Async<unit> }
 
@@ -33,6 +60,11 @@ module WorkloadContext =
 
     let s2Basin name ctx =
         ctx |> requireS2 |> S2Resource.basin name
+
+    let requireHost name (ctx: WorkloadContext) =
+        match ctx.Hosts |> Map.tryFind name with
+        | Some host -> host
+        | None -> failwithf "workload requires processHost '%s' but it was not declared" name
 
 type ProofOperationOptions =
     { ClientId: string option
@@ -65,7 +97,7 @@ type NegativeControlSpec<'result> =
 type ResourceSpec =
     | S2LiveFromEnv
     | S2Lite of root: string
-    | ProcessHost of name: string
+    | ProcessHost of ProcessHostSpec
 
 type PropertySpec<'result> =
     { Name: string

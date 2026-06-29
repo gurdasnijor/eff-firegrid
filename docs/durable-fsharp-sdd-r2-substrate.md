@@ -10,7 +10,7 @@ Two corrections — *(a)* stock F#/Fable only, no Effect/Schema/Thoth; *(b)* S2 
 
 Three load-bearing resolutions, now concrete instead of hand-waved:
 
-1. **Commit = fenced append.** `appendIfFenced token` is S-Commit; `FencingTokenMismatch` is "another worker already committed" (§5.3); `Record.fence` claims ownership.
+1. **Commit = fenced append.** `appendIfFenced token` is S-Commit; `FencingTokenMismatch` is "our claim is stale" (§5.3); `Record.fence` claims ownership.
 2. **Two streams per key.** `{key}/log` (single-writer, fenced) + `{key}/in` (multi-writer, unconditional). This dissolves the conditional-append-vs-arrivals tension that one-stream-per-key creates.
 3. **Placement is racy; fencing is the safety net.** Multi-host correctness never depends on getting ownership assignment right — only on at-most-one fence holder committing. This is §5.3 realized on `appendIfFenced`.
 
@@ -20,6 +20,19 @@ Implementation status:
 - Reuse the pure replay semantics as the executable contract, but do not let it defer the S2 binding. The implementation path is: pure replay core → S2 two-stream substrate → relay/timer dispatch.
 - Treat `FencingTokenMismatch` precisely: it means the stream's current fencing token is different from ours. That usually means another host has claimed ownership; it does **not** by itself prove the other host has committed user work.
 - Pick one log record format per path. Base S2 text records are fine for the first implementation; use bytes + `S2Patterns.producer/consumer` only when chunking/dedup framing is required. Do not write text records and then read them through the bytes-pattern consumer.
+- Build upward using the Azure Durable Functions F# samples as a conformance ladder, because they are concrete programs over the paper's implementation model: `HelloSequence` (sequential activity replay), `BackupSiteContent` (`WhenAll` fan-out/fan-in), `Monitor` (deterministic time + timer loop + replay-safe logging), and `PhoneVerification` (`WhenAny` race between external event and timer, with cancellation).
+
+Implemented slices:
+
+- **Tier 1 replay core.** `Durable<'a>` terms, positional `OpId`s, `History`, and deterministic `replay`, with compiled replay-law validation.
+- **Tier 1.1 fan-out/fan-in.** `PerformAll` / `Durable.performAll`, modelling the `Task.WhenAll` activity batch shape from `BackupSiteContent`; proof checks positional dispatch, partial replay of only missing completions, and source-order results independent of completion order.
+- **Substrate skeleton.** S2 storage keys, two-stream naming, fenced claim/commit, inbox append, and text relay batch helpers.
+
+Next slices, still one layer + proof at a time:
+
+- `WhenAny` over timers/signals/activities, including cancellation of losing timers.
+- deterministic current time and replay-safe logging, enough to model `Monitor`.
+- an ergonomic F# CE/API that lowers to the proven terms instead of becoming the semantics.
 
 One surprising constraint surfaced from your own code — see §1.
 

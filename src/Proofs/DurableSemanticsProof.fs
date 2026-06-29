@@ -12,6 +12,9 @@ module DurableSemanticsProof =
     let private resolveEvents (opId: OpId) (need: Need) : Event list =
         match need with
         | NeedsActivity activity -> [ ActivityCompleted(opId, "done:" + activity.Name) ]
+        | NeedsActivities pending ->
+            pending
+            |> List.map (fun (id, activity) -> ActivityCompleted(id, "done:" + activity.Name))
         | NeedsEvent(Timer _) -> [ TimerFired opId ]
         | NeedsEvent(Signal name) -> [ SignalReceived(opId, name, "sig:" + name) ]
 
@@ -39,6 +42,13 @@ module DurableSemanticsProof =
           Durable.perform { Name = "reserve"; Input = "x" }
           |> Durable.bind (fun _ -> Durable.await (Timer 1000L))
           |> Durable.bind (fun _ -> Durable.perform { Name = "ship"; Input = "y" })
+
+          "fan out fan in activities",
+          Durable.performAll
+              [ { Name = "backup"; Input = "a.txt" }
+                { Name = "backup"; Input = "b.txt" }
+                { Name = "backup"; Input = "c.txt" } ]
+          |> Durable.bind (fun values -> Durable.result (String.concat "," values))
 
           "signal then activity",
           Durable.await (Signal "approved")
@@ -134,6 +144,62 @@ module DurableSemanticsProof =
                             match Durable.replay signaled signal with
                             | Done value -> Harness.expectEqual ctx "signal payload is replayed" "yes" value
                             | other -> Harness.check ctx (sprintf "expected signal replay, got %A" other) false
+                        })
+
+                do!
+                    Harness.section
+                        ctx
+                        "fan-out/fan-in replay"
+                        (async {
+                            let activities =
+                                [ { Name = "copy"; Input = "a" }
+                                  { Name = "copy"; Input = "b" }
+                                  { Name = "copy"; Input = "c" } ]
+
+                            let program =
+                                Durable.performAll activities
+                                |> Durable.bind (fun values -> Durable.result (String.concat "|" values))
+
+                            match Durable.replay History.empty program with
+                            | Blocked(OpId 0, NeedsActivities pending) ->
+                                Harness.expectEqual
+                                    ctx
+                                    "batch dispatches positional op ids"
+                                    [ OpId 0; OpId 1; OpId 2 ]
+                                    (pending |> List.map fst)
+
+                                Harness.expectEqual
+                                    ctx
+                                    "batch carries activities in source order"
+                                    activities
+                                    (pending |> List.map snd)
+                            | other -> Harness.check ctx (sprintf "expected activity batch, got %A" other) false
+
+                            let partial = History.empty |> History.append (ActivityCompleted(OpId 0, "a-done"))
+
+                            match Durable.replay partial program with
+                            | Blocked(OpId 0, NeedsActivities missing) ->
+                                Harness.expectEqual
+                                    ctx
+                                    "partial batch re-dispatches only missing activities"
+                                    [ OpId 1; OpId 2 ]
+                                    (missing |> List.map fst)
+                            | other -> Harness.check ctx (sprintf "expected partial batch block, got %A" other) false
+
+                            let completedOutOfOrder =
+                                History.empty
+                                |> History.append (ActivityCompleted(OpId 2, "c-done"))
+                                |> History.append (ActivityCompleted(OpId 0, "a-done"))
+                                |> History.append (ActivityCompleted(OpId 1, "b-done"))
+
+                            match Durable.replay completedOutOfOrder program with
+                            | Done value ->
+                                Harness.expectEqual
+                                    ctx
+                                    "batch result follows source order, not completion order"
+                                    "a-done|b-done|c-done"
+                                    value
+                            | other -> Harness.check ctx (sprintf "expected completed batch, got %A" other) false
                         })
 
                 do!

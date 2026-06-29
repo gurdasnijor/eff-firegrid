@@ -14,6 +14,7 @@ type EventKey =
 type Durable<'a> =
     | Return of 'a
     | Perform of Activity * k: (Value -> Durable<'a>)
+    | PerformAll of Activity list * k: (Value list -> Durable<'a>)
     | Await of EventKey * k: (Value -> Durable<'a>)
 
 type Event =
@@ -27,6 +28,7 @@ type History = private History of Event list
 
 type Need =
     | NeedsActivity of Activity
+    | NeedsActivities of (OpId * Activity) list
     | NeedsEvent of EventKey
 
 type Outcome<'a> =
@@ -36,6 +38,8 @@ type Outcome<'a> =
 [<RequireQualifiedAccess>]
 module OpId =
     let zero = OpId 0
+
+    let add offset (OpId value) = OpId(value + offset)
 
     let next (OpId value) = OpId(value + 1)
 
@@ -77,6 +81,7 @@ module Durable =
             function
             | Return value -> binder value
             | Perform(activity, k) -> Perform(activity, k >> loop)
+            | PerformAll(activities, k) -> PerformAll(activities, k >> loop)
             | Await(key, k) -> Await(key, k >> loop)
 
         loop program
@@ -84,6 +89,8 @@ module Durable =
     let map mapper program = bind (mapper >> result) program
 
     let perform activity = Perform(activity, Return)
+
+    let performAll activities = PerformAll(activities, Return)
 
     let await key = Await(key, Return)
 
@@ -95,6 +102,26 @@ module Durable =
                 match History.completed opId history with
                 | Some value -> loop (OpId.next opId) (k value)
                 | None -> Blocked(opId, NeedsActivity activity)
+            | PerformAll(activities, k) ->
+                let pending =
+                    activities |> List.mapi (fun index activity -> OpId.add index opId, activity)
+
+                let completed =
+                    pending
+                    |> List.map (fun (id, activity) -> id, activity, History.completed id history)
+
+                let missing =
+                    completed
+                    |> List.choose (fun (id, activity, value) ->
+                        match value with
+                        | Some _ -> None
+                        | None -> Some(id, activity))
+
+                if List.isEmpty missing then
+                    let values = completed |> List.choose (fun (_, _, value) -> value)
+                    loop (OpId.add activities.Length opId) (k values)
+                else
+                    Blocked(opId, NeedsActivities missing)
             | Await(key, k) ->
                 match History.resolved opId key history with
                 | Some value -> loop (OpId.next opId) (k value)

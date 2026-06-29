@@ -69,6 +69,9 @@ Implemented and proof-backed today:
 - `ActivityCommandAdapter.runOnce` invokes registered activity handlers for
   committed `CallActivity` commands, durably records `ActivityCompleted`, and
   checkpoints only after completion admission.
+- `InboxFold.runOnce` admits fresh `{key}/in` arrivals into the fenced log,
+  records inbox cursor/highwater progress, and folds activity completions into
+  replay history.
 - The compiled proof runner validates the above against pure laws and ephemeral
   S2 streams.
 
@@ -271,14 +274,16 @@ Proof obligations:
 
 ### L3 Inbox Fold
 
-Define the concrete `{key}/in` message shape for start, signal, and activity
-completion arrivals, then fold fresh inbox records into the fenced log.
+Implemented: `InboxEnvelope` is the concrete `{key}/in` message shape for start,
+signal, and activity completion arrivals. `InboxFold.runOnce` folds fresh inbox
+records into the fenced log, records source highwater for dedup, and advances
+the inbox cursor only in the same fenced append.
 
 Proof obligations:
 
 - inbox cursor is reconstructed from the log
 - duplicate arrivals with the same source provenance are ignored
-- signal delivery survives host restart
+- activity completion delivery survives host restart
 - concurrent inbox arrivals do not break fenced log commits
 
 ### L4 Timer Adapter

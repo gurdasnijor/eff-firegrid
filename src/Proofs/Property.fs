@@ -18,6 +18,7 @@ module Property =
     type ResolvedResources =
         { S2: S2Resource option
           Hosts: Map<string, HostResource>
+          KillHosts: Map<string, unit -> Async<unit>>
           Releases: (unit -> Async<unit>) list }
 
     let private unsupportedResources resources =
@@ -90,6 +91,7 @@ module Property =
     let private emptyResources =
         { S2 = None
           Hosts = Map.empty
+          KillHosts = Map.empty
           Releases = [] }
 
     let private releaseResources resources =
@@ -133,6 +135,7 @@ module Property =
                     resolved <-
                         { resolved with
                             Hosts = resolved.Hosts |> Map.add managed.Resource.Name managed.Resource
+                            KillHosts = resolved.KillHosts |> Map.add managed.Resource.Name managed.Kill
                             Releases = managed.Stop :: resolved.Releases }
 
             return resolved
@@ -152,6 +155,14 @@ module Property =
           Seed = seed
           S2 = resources.S2
           Hosts = resources.Hosts
+          Faults =
+            { KillHost =
+                fun name ->
+                    async {
+                        match resources.KillHosts |> Map.tryFind name with
+                        | Some kill -> do! kill ()
+                        | None -> return failwithf "processHost '%s' is not supervised by the verification runner" name
+                    } }
           NextOperationId = nextOperation
           EmitSpan = Reports.emitSpan store }
 

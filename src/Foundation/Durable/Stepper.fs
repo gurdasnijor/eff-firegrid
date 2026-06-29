@@ -11,6 +11,7 @@ type StepCommand =
 type StepRecord =
     | HistoryEvent of Event
     | Command of StepCommand
+    | CommandDispatchCheckpoint of nextSeqNum: int64
 
 type StepPlan<'a> =
     | Complete of 'a

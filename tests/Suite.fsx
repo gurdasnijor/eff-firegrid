@@ -52,6 +52,9 @@ let pathJoin (_path: obj) (_left: string) (_right: string) : string = jsNative
 [<Emit("$0.writeFileSync($1, $2, 'utf8')")>]
 let writeFileSync (_fs: obj) (_path: string) (_content: string) : unit = jsNative
 
+[<Emit("$0.readFileSync($1, 'utf8')")>]
+let readFileSync (_fs: obj) (_path: string) : string = jsNative
+
 [<Emit("fetch($0).then(r => r.text())")>]
 let fetchText (_url: string) : JS.Promise<string> = jsNative
 
@@ -420,7 +423,8 @@ let suite =
                                 verify (fun v ->
                                     [ v.Expect.WorkloadResult "host was killed" true
                                       v.Fault.HostKilled "host-a"
-                                      v.Fault.HostKillAccepted "host-a" ])
+                                      v.Fault.HostKillAccepted "host-a"
+                                      v.Fault.HostKillReported "host-a" ])
                             }
 
                         let! report =
@@ -433,6 +437,20 @@ let suite =
                                 "fault-proof"
 
                         check "killHost property passes" report.Passed
+                        check "killHost report records one fault" (report.Faults.Length = 1)
+                        check "killHost report records hostKill" (report.Faults.Head.Kind = "hostKill")
+                        check "killHost report records target" (report.Faults.Head.Target = "host-a")
+                        check "killHost report records accepted signal" (report.Faults.Head.Accepted = Some true)
+
+                        check
+                            "killHost report has replay command"
+                            (report.ReplayCommand.Contains("--trial-id process-host-kill-trial"))
+
+                        let reportJson = readFileSync fs report.ReportPath
+
+                        check "killHost report JSON includes faults" (reportJson.Contains("\"faults\""))
+                        check "killHost report JSON includes hostKill" (reportJson.Contains("\"kind\":\"hostKill\""))
+                        check "killHost report JSON includes replay command" (reportJson.Contains("\"replayCommand\""))
 
                         let undeclaredFault =
                             property "undeclared-process-host-kill" {

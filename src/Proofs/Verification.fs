@@ -50,6 +50,25 @@ type FaultVerifiers<'result>() =
               "verification.signal", "SIGKILL"
               "verification.accepted", "true" ]
 
+    member _.HostKillReported(hostName: string) : Check<'result> =
+        { Name = sprintf "host '%s' kill fault was reported" hostName
+          RunCheck =
+            fun trial ->
+                async {
+                    let reported =
+                        trial.Faults
+                        |> List.exists (fun fault ->
+                            fault.Kind = "hostKill"
+                            && fault.Target = hostName
+                            && fault.Signal = Some "SIGKILL"
+                            && fault.Accepted = Some true)
+
+                    if reported then
+                        return Ok()
+                    else
+                        return Error(sprintf "host kill fault not reported: %s" hostName)
+                } }
+
 type Verifiers<'result> =
     { Expect: ExpectVerifiers<'result>
       Trace: TraceVerifiers<'result>

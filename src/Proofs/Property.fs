@@ -18,7 +18,7 @@ module Property =
     type ResolvedResources =
         { S2: S2Resource option
           Hosts: Map<string, HostResource>
-          KillHosts: Map<string, unit -> Async<unit>>
+          KillHosts: Map<string, unit -> Async<bool>>
           Releases: (unit -> Async<unit>) list }
 
     let private unsupportedResources resources =
@@ -141,13 +141,32 @@ module Property =
             return resolved
         }
 
-    let private workloadContext (trialId: string) (seed: int) (store: TraceStore) (resources: ResolvedResources) =
+    let private workloadContext
+        (trialId: string)
+        (seed: int)
+        (store: TraceStore)
+        (resources: ResolvedResources)
+        (faults: ResizeArray<FaultEvent>)
+        =
         let nextOperation =
             let counter = ref 0
 
             fun () ->
                 counter.Value <- counter.Value + 1
                 counter.Value
+
+        let nextFault =
+            let counter = ref 0
+
+            fun kind target signal accepted ->
+                counter.Value <- counter.Value + 1
+
+                { FaultId = sprintf "%s-fault-%d" trialId counter.Value
+                  Kind = kind
+                  Target = target
+                  Signal = signal
+                  Accepted = accepted
+                  OperationIndex = counter.Value }
 
         { TrialId = trialId
           Root = store.Root
@@ -160,7 +179,10 @@ module Property =
                 fun name ->
                     async {
                         match resources.KillHosts |> Map.tryFind name with
-                        | Some kill -> do! kill ()
+                        | Some kill ->
+                            let! accepted = kill ()
+
+                            faults.Add(nextFault "hostKill" name (Some "SIGKILL") (Some accepted))
                         | None -> return failwithf "processHost '%s' is not supervised by the verification runner" name
                     } }
           NextOperationId = nextOperation
@@ -179,12 +201,13 @@ module Property =
         async {
             let trialId = Reports.trialId (propertyName + "-negative")
             let store = Reports.traceStore root trialId
+            let faults = ResizeArray<FaultEvent>()
 
             let! resources = resolveResources store propertyResources
 
             let! result =
                 async {
-                    let ctx = workloadContext trialId seed store resources
+                    let ctx = workloadContext trialId seed store resources faults
                     let work = control.Workload |> Option.defaultValue positiveWorkload
                     return! runWorkload work ctx
                 }
@@ -196,7 +219,8 @@ module Property =
                   PropertyName = propertyName
                   TrialId = trialId
                   Result = result
-                  Traces = store }
+                  Traces = store
+                  Faults = List.ofSeq faults }
 
             let! checkReports = runChecks completed control.Verifiers
 
@@ -225,6 +249,7 @@ module Property =
                   Passed = passed
                   ExpectedFailure = control.ExpectedFailure
                   FailedChecks = failedChecks
+                  Faults = List.ofSeq faults
                   Message =
                     if passed then
                         None
@@ -238,6 +263,7 @@ module Property =
 
             let store = Reports.traceStore config.Root trialId
             let reportPath = Reports.join [ store.Root; "report.json" ]
+            let faults = ResizeArray<FaultEvent>()
 
             do!
                 Reports.emitSpan
@@ -251,7 +277,11 @@ module Property =
                 if List.isEmpty unsupported then
                     async {
                         let! resources = resolveResources store spec.Resources
-                        let! result = workloadContext trialId config.Seed store resources |> runWorkload spec.Workload
+
+                        let! result =
+                            workloadContext trialId config.Seed store resources faults
+                            |> runWorkload spec.Workload
+
                         do! releaseResources resources
                         return result
                     }
@@ -263,7 +293,8 @@ module Property =
                   PropertyName = spec.Name
                   TrialId = trialId
                   Result = workloadResult
-                  Traces = store }
+                  Traces = store
+                  Faults = List.ofSeq faults }
 
             let! checks = runChecks completed spec.Verifiers
 
@@ -313,8 +344,10 @@ module Property =
                   TrialId = trialId
                   Passed = passed
                   WorkloadFailed = workloadFailed
+                  Faults = List.ofSeq faults
                   Checks = checks
                   NegativeControls = Array.toList negativeControls
+                  ReplayCommand = sprintf "npm run proofs -- --proof %s --trial-id %s --preserve" spec.Name trialId
                   ReportPath = reportPath }
 
             Reports.writePropertyReport report

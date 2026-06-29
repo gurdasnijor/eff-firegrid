@@ -11,7 +11,7 @@ module ProcessHost =
     type Instance =
         { Resource: HostResource
           Stop: unit -> Async<unit>
-          Kill: unit -> Async<unit> }
+          Kill: unit -> Async<bool> }
 
     [<Import("spawn", "node:child_process")>]
     let private spawn (_command: string) (_args: string array) (_options: obj) : ChildProcess = jsNative
@@ -80,6 +80,10 @@ module ProcessHost =
                                   "host.pid", string proc.pid
                                   "verification.signal", signal
                                   "verification.accepted", string accepted ]
+
+                        return accepted
+                    else
+                        return false
                 }
 
             do!
@@ -114,7 +118,12 @@ module ProcessHost =
                         { Name = spec.Name
                           ProcessId = proc.pid
                           ReadinessUrl = spec.ReadinessUrl }
-                      Stop = fun () -> terminate "verification.host.stop" "SIGTERM"
+                      Stop =
+                        fun () ->
+                            async {
+                                let! _ = terminate "verification.host.stop" "SIGTERM"
+                                return ()
+                            }
                       Kill = fun () -> terminate "verification.host.kill" "SIGKILL" }
             with error ->
                 running.Value <- false

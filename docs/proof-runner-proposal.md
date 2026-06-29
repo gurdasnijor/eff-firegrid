@@ -27,15 +27,16 @@ Current implementation on `main` and the ergonomic proof-runner branch:
   env, waits for readiness, exposes `ctx.Hosts`, and emits
   `verification.host.start/ready/stop`
 - first process fault controller: `ctx.Faults.KillHost` / `WorkloadContext.killHost`
-  terminates runner-owned hosts, emits `verification.host.kill`, and rejects
-  undeclared host faults at the workload boundary
+  terminates runner-owned hosts, emits `verification.host.kill`, records
+  report-level `hostKill` fault events, and rejects undeclared host faults at
+  the workload boundary
 - CLI path through `proofs run`, `proofs list`, and `npm run proofs -- --proof <filter>`
 - current durable replay checks migrated out of `Harness.fs` into one property
 
 Still pending from Milestone 1:
 
 - OTLP receiver/exporter; the first runner writes JSONL spans directly
-- richer report schema and replay command support
+- replay command execution support
 
 This SDD replaces the earlier custom in-memory evidence model. The proof
 runner should use the same observability substrate the production system needs:
@@ -455,7 +456,9 @@ type FaultController =
 The implemented first slice is deliberately smaller: `KillHost` is available
 for declared `processHost` resources and records a `verification.host.kill`
 span with the host name, process id, signal, and whether the OS accepted the
-signal. Undeclared host faults fail the workload instead of being ignored.
+signal. It also records a report-level `hostKill` fault event with the target,
+signal, acceptance flag, and fault id. Undeclared host faults fail the workload
+instead of being ignored.
 
 The first high-value cases:
 
@@ -530,7 +533,16 @@ type CompletedTrial<'result> =
       TrialId: string
       Result: Result<'result, exn>
       Traces: TraceStore
+      Faults: FaultEvent list
       NegativeControlResults: NegativeControlResult list }
+
+type FaultEvent =
+    { FaultId: string
+      Kind: string
+      Target: string
+      Signal: string option
+      Accepted: bool option
+      OperationIndex: int }
 
 type Check<'result> =
     { Name: string
@@ -550,7 +562,8 @@ boundary instead of receiving an implicit fake resource.
 Host and fault verifiers are typed wrappers over trace evidence, not a second
 evidence path. For example, `v.Fault.HostKillAccepted "host-a"` checks for a
 `verification.host.kill` span with `host.name=host-a`, `SIGKILL`, and
-`verification.accepted=true`.
+`verification.accepted=true`. `v.Fault.HostKillReported "host-a"` checks the
+runner-materialized fault event in the completed trial/report.
 
 ## Runner Order
 
@@ -805,7 +818,8 @@ Acceptance criteria:
 1. At least one proof has a negative control that fails as expected.
 2. An unexpected negative-control pass fails the run.
 3. Fault plans are represented in spans and reports.
-4. Replay can reproduce the same fault plan.
+4. Reports include a replay command stub for the same proof filter/trial id.
+5. Replay can reproduce the same fault plan.
 
 ## Milestone 3: Effect Ledger Boundary Proofs
 

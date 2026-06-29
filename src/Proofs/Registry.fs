@@ -8,4 +8,5 @@ module Registry =
           DurableSemanticsProof.proof
           DurableS2SubstrateProof.proof
           DurableStepperProof.proof
-          DurableHostProof.proof ]
+          DurableHostProof.proof
+          DurableCommandDispatchProof.proof ]

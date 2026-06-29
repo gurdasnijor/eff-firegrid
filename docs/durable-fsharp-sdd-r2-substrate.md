@@ -67,11 +67,23 @@ Implemented slices:
   compiled proof covers first activity commit, duplicate suppression on a
   second run, completed-activity advancement to the next need, and stale-fence
   deposition.
+- **Tier 2.4 durable command dispatch boundary.**
+  `DurableCommandDispatch` scans committed log records, selects only
+  `Outgoing(Command _)` records with their source sequence numbers, and writes
+  a fenced `CommandDispatchCheckpoint` record after a caller has processed the
+  scanned batch. The checkpoint cursor is reconstructed from the durable log,
+  so a restarted dispatcher does not reselect already-checkpointed commands.
+  This is still not an activity worker, timer service, or daemon scheduler; it
+  is the typed outbox boundary those adapters will sit on. The compiled proof
+  covers command-only selection, batch-limit cursor advancement, fail-closed
+  decode behavior, checkpoint codec round-trip, duplicate suppression after an
+  S2 checkpoint, and stale-owner checkpoint rejection.
 
 Next slices, still one layer + proof at a time:
 
-- add the narrow command-dispatch boundary for committed `Outgoing(Command _)`
-  records, without adding a daemon scheduler or broad host loop.
+- add the first command adapter boundary: turn `CallActivity` commands into a
+  durable activity inbox message shape with source-sequence provenance and
+  destination-side dedup, without yet building a broad scheduler.
 
 One surprising constraint surfaced from your own code — see §1.
 

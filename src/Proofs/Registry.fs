@@ -5,4 +5,5 @@ module Registry =
         [ FoundationSubjectHistoryProof.proof
           FoundationStateViewProof.proof
           FoundationKvStoreProof.proof
-          DurableSemanticsProof.proof ]
+          DurableSemanticsProof.proof
+          DurableS2SubstrateProof.proof ]

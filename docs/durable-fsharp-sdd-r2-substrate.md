@@ -44,11 +44,16 @@ Implemented slices:
   replay terms. The compiled proof checks sequential calls, fan-out,
   `WhenAny`, deterministic time, timers, and replay-safe logging through that
   API.
+- **Tier 2.1 S2 two-stream substrate binding.**
+  `S2Substrate` now has compiled proof coverage against real ephemeral S2
+  streams for `{key}/log` + `{key}/in` provisioning, fence claims, fenced
+  commits, replay that ignores fence command records, stale-owner rejection,
+  inbox append/read, and relay of `Outgoing` log entries.
 
 Next slices, still one layer + proof at a time:
 
-- bind the proven replay terms to the S2 two-stream substrate path: claim,
-  fenced commit, inbox delivery, and replay from `{key}/log`.
+- add the first durable stepper that translates `Durable.replay` `Need`s into
+  fenced S2 log commits and inbox-facing delivery records.
 
 One surprising constraint surfaced from your own code — see §1.
 

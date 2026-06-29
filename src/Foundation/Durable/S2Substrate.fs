@@ -50,7 +50,7 @@ module FenceToken =
 
 [<RequireQualifiedAccess>]
 module S2Substrate =
-    let streams (basin: S2.Basin) key =
+    let streams (basin: S2.Basin) key : StreamPair =
         { Key = key
           Log = basin |> S2.stream (StorageKey.logStreamName key)
           Inbox = basin |> S2.stream (StorageKey.inboxStreamName key) }
@@ -65,7 +65,7 @@ module S2Substrate =
     let ensureStreams basin key =
         ensureStreamsWith S2.StreamConfig.empty basin key
 
-    let claimWith token pair =
+    let claimWith token (pair: StreamPair) : Async<OwnedKey> =
         async {
             let! _ = pair.Log |> S2.append [ S2.Record.fence (FenceToken.value token) ]
 
@@ -78,24 +78,30 @@ module S2Substrate =
 
     let claim host pair = claimWith (FenceToken.create host) pair
 
-    let readLogText decode owned =
+    let readLogText decode (owned: OwnedKey) =
         async {
-            let! records =
-                owned.Log
-                |> S2.readWith
-                    { S2.ReadOptions.empty with
-                        IgnoreCommandRecords = true }
+            try
+                let! records =
+                    owned.Log
+                    |> S2.readWith
+                        { S2.ReadOptions.empty with
+                            Start = Some(S2.FromSeqNum 0L)
+                            IgnoreCommandRecords = true }
 
-            return records |> List.map (fun record -> record.SeqNum, decode record.Body)
+                return records |> List.map (fun record -> record.SeqNum, decode record.Body)
+            with error ->
+                match S2Errors.classify error with
+                | S2Errors.RangeNotSatisfiable _ -> return []
+                | _ -> return raise error
         }
 
-    let readInbox from count owned =
+    let readInbox from count (owned: OwnedKey) =
         owned.Inbox |> S2.read (S2.FromSeqNum from) count
 
-    let appendInboxText headers body pair =
+    let appendInboxText headers body (pair: StreamPair) =
         pair.Inbox |> S2.append [ S2.Record.textWith headers body ]
 
-    let commitRecords records owned =
+    let commitRecords records (owned: OwnedKey) =
         async {
             let opts =
                 S2.AppendOptions.none
@@ -114,7 +120,7 @@ module S2Substrate =
         let records = entries |> List.map (encode >> S2.Record.text)
         commitRecords records owned
 
-    let relayTextBatch decode encodeMessage destinationKey inboxOf from count owned =
+    let relayTextBatch decode encodeMessage destinationKey inboxOf from count (owned: OwnedKey) =
         async {
             let! records =
                 owned.Log

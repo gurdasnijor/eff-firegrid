@@ -9,6 +9,7 @@ module Program =
         printfn "Commands:"
         printfn "  proofs list               List registered proof names"
         printfn "  proofs run [--proof name] Run the compiled validation proof suite"
+        printfn "  proofs replay <report>    Re-run the proof property named by report.json"
 
     let private listProofs () = Runner.listProofs Registry.all
 
@@ -26,6 +27,9 @@ module Program =
         match argv |> Array.toList with
         | "proofs" :: "list" :: _ ->
             listProofs ()
+            0
+        | "proofs" :: "replay" :: reportPath :: _ ->
+            Runner.replay reportPath Registry.all
             0
         | "proofs" :: "run" :: args ->
             Runner.run (parseRunArgs Runner.defaultConfig args) Registry.all

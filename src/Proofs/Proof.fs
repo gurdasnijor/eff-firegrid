@@ -151,6 +151,13 @@ type PropertyReport =
       ReplayCommand: string
       ReportPath: string }
 
+type ReplaySpec =
+    { ReportPath: string
+      ProofName: string
+      PropertyName: string
+      TrialId: string
+      ReplayCommand: string }
+
 type RunnerConfig =
     { Root: string
       ProofFilter: string option

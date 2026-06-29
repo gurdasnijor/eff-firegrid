@@ -36,7 +36,7 @@ Current implementation on `main` and the ergonomic proof-runner branch:
 Still pending from Milestone 1:
 
 - OTLP receiver/exporter; the first runner writes JSONL spans directly
-- replay command execution support
+- deterministic scheduled-fault replay beyond fixed trial id/property reruns
 
 This SDD replaces the earlier custom in-memory evidence model. The proof
 runner should use the same observability substrate the production system needs:
@@ -460,6 +460,13 @@ signal. It also records a report-level `hostKill` fault event with the target,
 signal, acceptance flag, and fault id. Undeclared host faults fail the workload
 instead of being ignored.
 
+Reports include a replay command and the CLI supports
+`proofs replay <report.json>`. Replay reads the report, selects the same
+property, reuses the recorded trial id, preserves the trial directory, and
+re-enters the compiled runner. This is enough to reproduce fixed trial-id
+workloads and inspect preserved evidence; span-triggered fault scheduling is a
+later layer.
+
 The first high-value cases:
 
 1. **Effect ledger append boundaries**: fail append `k`, restart by re-folding,
@@ -818,7 +825,7 @@ Acceptance criteria:
 1. At least one proof has a negative control that fails as expected.
 2. An unexpected negative-control pass fails the run.
 3. Fault plans are represented in spans and reports.
-4. Reports include a replay command stub for the same proof filter/trial id.
+4. Reports include a replay command for the same proof filter/trial id.
 5. Replay can reproduce the same fault plan.
 
 ## Milestone 3: Effect Ledger Boundary Proofs

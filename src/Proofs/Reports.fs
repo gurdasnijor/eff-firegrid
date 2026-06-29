@@ -13,6 +13,9 @@ module Reports =
     [<Emit("$0.writeFileSync($1, $2, 'utf8')")>]
     let private writeFile (_fs: obj) (_path: string) (_content: string) : unit = jsNative
 
+    [<Emit("$0.readFileSync($1, 'utf8')")>]
+    let private readFile (_fs: obj) (_path: string) : string = jsNative
+
     [<Emit("$0.appendFileSync($1, $2, 'utf8')")>]
     let private appendFile (_fs: obj) (_path: string) (_content: string) : unit = jsNative
 
@@ -24,6 +27,9 @@ module Reports =
 
     [<Emit("JSON.stringify($0)")>]
     let private stringify (_value: obj) : string = jsNative
+
+    [<Emit("JSON.parse($0)")>]
+    let private parseJson (_value: string) : obj = jsNative
 
     [<Emit("Date.now()")>]
     let nowMillis () : float = jsNative
@@ -124,3 +130,16 @@ module Reports =
 
         ensureDir (dirname path report.ReportPath)
         write report.ReportPath (json body + "\n")
+
+    let readReplaySpec reportPath =
+        let report = readFile fs reportPath |> parseJson
+        let proofName: string = report?proof
+        let propertyName: string = report?property
+        let trialId: string = report?trialId
+        let replayCommand: string = report?replayCommand
+
+        { ReportPath = reportPath
+          ProofName = proofName
+          PropertyName = propertyName
+          TrialId = trialId
+          ReplayCommand = replayCommand }

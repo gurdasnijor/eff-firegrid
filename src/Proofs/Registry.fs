@@ -9,4 +9,5 @@ module Registry =
           DurableS2SubstrateProof.proof
           DurableStepperProof.proof
           DurableHostProof.proof
-          DurableCommandDispatchProof.proof ]
+          DurableCommandDispatchProof.proof
+          DurableRegistryProof.proof ]

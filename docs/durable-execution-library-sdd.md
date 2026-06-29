@@ -64,6 +64,8 @@ Implemented and proof-backed today:
 - `DurableHost.runOnce` reads a log, plans one step, and commits under a fence.
 - `DurableCommandDispatch` selects committed `Outgoing(Command _)` records and
   advances a durable dispatch checkpoint.
+- `ActivityRegistry` and `WorkflowRegistry` provide immutable, explicit
+  registration maps with duplicate rejection and typed missing-handler errors.
 - The compiled proof runner validates the above against pure laws and ephemeral
   S2 streams.
 
@@ -240,12 +242,12 @@ Build one public-facing layer plus proof at a time.
 
 ### L1 Activity Registries
 
-Add immutable `ActivityRegistry` and `WorkflowRegistry`.
+Implemented: immutable `ActivityRegistry` and `WorkflowRegistry`.
 
 Proof obligations:
 
 - registration is deterministic and last-write or duplicate-reject behavior is
-  explicit
+  explicit: duplicate registration is rejected
 - missing handlers fail as typed errors
 - workflow lookup is stable across host ticks
 

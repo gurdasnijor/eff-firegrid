@@ -21,6 +21,7 @@
     <Compile Include="src/Foundation/Durable/S2Substrate.fs" />
     <Compile Include="src/Proofs/Proof.fs" />
     <Compile Include="src/Proofs/Reports.fs" />
+    <Compile Include="src/Proofs/S2Lite.fs" />
     <Compile Include="src/Proofs/TraceSql.fs" />
     <Compile Include="src/Proofs/TraceProof.fs" />
     <Compile Include="src/Proofs/Expect.fs" />

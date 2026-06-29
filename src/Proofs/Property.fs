@@ -15,14 +15,30 @@ module Property =
           NegativeControls: NegativeControlSpec<'result> list
           RequiresNegativeControl: bool }
 
-    type ResolvedResources = { S2: S2LiveResource option }
+    type ResolvedResources =
+        { S2: S2Resource option
+          Releases: (unit -> Async<unit>) list }
 
     let private unsupportedResources resources =
-        resources
-        |> List.choose (function
-            | S2Lite _ -> Some "s2Lite is not implemented yet"
-            | ProcessHost name -> Some(sprintf "processHost '%s' is not implemented yet" name)
-            | S2LiveFromEnv -> None)
+        let unsupported =
+            resources
+            |> List.choose (function
+                | ProcessHost name -> Some(sprintf "processHost '%s' is not implemented yet" name)
+                | S2LiveFromEnv
+                | S2Lite _ -> None)
+
+        let s2ResourceCount =
+            resources
+            |> List.filter (function
+                | S2LiveFromEnv
+                | S2Lite _ -> true
+                | _ -> false)
+            |> List.length
+
+        if s2ResourceCount > 1 then
+            "only one S2 resource can be declared per property" :: unsupported
+        else
+            unsupported
 
     let private checkReport name result =
         match result with
@@ -55,7 +71,16 @@ module Property =
             return List.ofSeq reports
         }
 
-    let private emptyResources = { S2 = None }
+    let private emptyResources = { S2 = None; Releases = [] }
+
+    let private releaseResources resources =
+        async {
+            for release in resources.Releases |> List.rev do
+                try
+                    do! release ()
+                with _ ->
+                    ()
+        }
 
     let private resolveResources (store: TraceStore) resources =
         async {
@@ -64,11 +89,22 @@ module Property =
             for resource in resources do
                 match resource with
                 | S2LiveFromEnv ->
-                    let s2 = { Client = S2Cli.connect () }
+                    let s2 =
+                        { Client = S2Cli.connect ()
+                          Kind = "s2LiveFromEnv"
+                          Endpoint = None
+                          LocalRoot = None }
+
                     resolved <- { resolved with S2 = Some s2 }
 
                     do! Reports.emitSpan store "verification.s2.live.connected" [ "resource.kind", "s2LiveFromEnv" ]
-                | S2Lite _ -> ()
+                | S2Lite localRoot ->
+                    let! s2Lite = S2Lite.start store localRoot
+
+                    resolved <-
+                        { resolved with
+                            S2 = Some s2Lite.Resource
+                            Releases = s2Lite.Stop :: resolved.Releases }
                 | ProcessHost _ -> ()
 
             return resolved
@@ -105,10 +141,15 @@ module Property =
             let store = Reports.traceStore root trialId
 
             let! resources = resolveResources store propertyResources
-            let ctx = workloadContext trialId seed store resources
 
-            let work = control.Workload |> Option.defaultValue positiveWorkload
-            let! result = runWorkload work ctx
+            let! result =
+                async {
+                    let ctx = workloadContext trialId seed store resources
+                    let work = control.Workload |> Option.defaultValue positiveWorkload
+                    return! runWorkload work ctx
+                }
+
+            do! releaseResources resources
 
             let completed =
                 { ProofName = proofName
@@ -170,7 +211,9 @@ module Property =
                 if List.isEmpty unsupported then
                     async {
                         let! resources = resolveResources store spec.Resources
-                        return! workloadContext trialId config.Seed store resources |> runWorkload spec.Workload
+                        let! result = workloadContext trialId config.Seed store resources |> runWorkload spec.Workload
+                        do! releaseResources resources
+                        return result
                     }
                 else
                     async { return Error(String.concat "; " unsupported) }

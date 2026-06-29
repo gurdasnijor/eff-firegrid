@@ -19,12 +19,13 @@ Current implementation on `main` and the ergonomic proof-runner branch:
 - runner-owned trial roots, `spans.jsonl`, and `report.json` (`Reports.fs`, `Runner.fs`)
 - first runner-owned resource: `s2LiveFromEnv` connects from local S2 CLI config,
   exposes `ctx.S2`, and emits `verification.s2.live.connected`
+- local `s2Lite` resource lifecycle: starts `s2 lite --local-root`, exposes
+  `ctx.S2`, and emits `verification.s2.lite.started/stopped`
 - CLI path through `proofs run`, `proofs list`, and `npm run proofs -- --proof <filter>`
 - current durable replay checks migrated out of `Harness.fs` into one property
 
 Still pending from Milestone 1:
 
-- real `s2 lite` lifecycle
 - process-host resources and readiness probes
 - OTLP receiver/exporter; the first runner writes JSONL spans directly
 - richer report schema and replay command support
@@ -482,8 +483,11 @@ type PropertySpec<'result> =
       Verifiers: Check<'result> list
       NegativeControls: NegativeControlSpec list }
 
-type S2LiveResource =
-    { Client: S2.Client }
+type S2Resource =
+    { Client: S2.Client
+      Kind: string
+      Endpoint: string option
+      LocalRoot: string option }
 
 type RunningHost =
     { Name: string
@@ -500,12 +504,12 @@ type WorkloadContext =
       Root: string
       Traces: TraceStore
       Seed: int
-      S2: S2LiveResource option
+      S2: S2Resource option
       NextOperationId: unit -> int
       EmitSpan: string -> (string * string) list -> Async<unit> }
 
 module WorkloadContext =
-    val requireS2: WorkloadContext -> S2LiveResource
+    val requireS2: WorkloadContext -> S2Resource
     val s2Basin: name: string -> WorkloadContext -> S2.Basin
 
 type CompletedTrial<'result> =
@@ -521,8 +525,9 @@ type Check<'result> =
       Run: CompletedTrial<'result> -> Async<Result<unit, string>> }
 ```
 
-The first implementation can constrain all properties to require `s2Lite`.
-Relax that later if a proof does not need S2.
+Properties declare `s2LiveFromEnv` or `s2Lite` when they need S2. Workloads
+use `WorkloadContext.requireS2` so undeclared S2 access fails at the proof
+boundary instead of receiving an implicit fake resource.
 
 ## Runner Order
 
@@ -747,7 +752,7 @@ Deliverables:
 1. proof and property CEs
 2. compiled proof registry
 3. basic runner CLI
-4. `s2LiveFromEnv` resource lifecycle; S2 lite resource lifecycle next
+4. `s2LiveFromEnv` and local `s2Lite` resource lifecycle
 5. workload result checks
 6. OTLP receiver/exporter writing `spans.jsonl`
 7. `TraceSql` backed by `chdb`

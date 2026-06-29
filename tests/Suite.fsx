@@ -16,6 +16,7 @@
 #load "../src/S2/Patterns.fs"
 #load "../src/Proofs/Proof.fs"
 #load "../src/Proofs/Reports.fs"
+#load "../src/Proofs/S2Lite.fs"
 #load "../src/Proofs/TraceSql.fs"
 #load "../src/Proofs/TraceProof.fs"
 #load "../src/Proofs/Expect.fs"
@@ -185,6 +186,83 @@ let suite =
                                 "resource-proof"
 
                         check "undeclared S2 resource fails workload" missingReport.WorkloadFailed
+                    finally
+                        rmSync fs root
+                })
+
+        do!
+            test
+                "proof resources: s2Lite starts local S2"
+                (async {
+                    let root = mkdtempSync fs (pathJoin path (tmpdir os) "eff-firegrid-proof-runner-")
+                    let liteRoot = pathJoin path root "s2-lite"
+
+                    try
+                        let liteProperty =
+                            property "s2-lite-resource" {
+                                s2Lite liteRoot
+
+                                workload (fun ctx ->
+                                    async {
+                                        let s2 = WorkloadContext.requireS2 ctx
+                                        let basinName = "proof-lite"
+                                        let streamName = "events"
+
+                                        let! _ = s2.Client |> S2.createBasin basinName
+                                        let basin = s2.Client |> S2.basin basinName
+                                        do! basin |> S2.createStream streamName
+                                        let stream = basin |> S2.stream streamName
+                                        let! _ = stream |> S2.appendStrings [ "ok" ]
+                                        let! records = stream |> S2.read (S2.FromSeqNum 0L) 1
+
+                                        return
+                                            s2.Kind = "s2Lite"
+                                            && s2.Endpoint.IsSome
+                                            && s2.LocalRoot = Some liteRoot
+                                            && (records |> List.map (fun record -> record.Body)) = [ "ok" ]
+                                    })
+
+                                verify (fun v ->
+                                    [ v.Expect.WorkloadResult "lite round trip succeeds" true
+                                      v.Trace.SpanExists
+                                          "s2 lite resource span emitted"
+                                          "verification.s2.lite.started"
+                                          [ "resource.kind", "s2Lite" ]
+                                      v.Trace.SpanExists
+                                          "s2 lite stop span emitted"
+                                          "verification.s2.lite.stopped"
+                                          [ "resource.kind", "s2Lite" ] ])
+                            }
+
+                        let! report =
+                            liteProperty.RunProperty
+                                { Root = root
+                                  ProofFilter = None
+                                  TrialId = Some "s2-lite-resource-trial"
+                                  Preserve = false
+                                  Seed = 1 }
+                                "resource-proof"
+
+                        check "s2Lite property passes" report.Passed
+
+                        let duplicateProperty =
+                            property "duplicate-s2-resource" {
+                                s2LiveFromEnv
+                                s2Lite liteRoot
+                                workload (fun _ -> async { return true })
+                                verify (fun v -> [ v.Expect.WorkloadResult "ok" true ])
+                            }
+
+                        let! duplicateReport =
+                            duplicateProperty.RunProperty
+                                { Root = root
+                                  ProofFilter = None
+                                  TrialId = Some "duplicate-s2-resource-trial"
+                                  Preserve = false
+                                  Seed = 1 }
+                                "resource-proof"
+
+                        check "duplicate S2 resources are rejected" duplicateReport.WorkloadFailed
                     finally
                         rmSync fs root
                 })

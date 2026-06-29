@@ -7,9 +7,13 @@ type TraceStore =
       Root: string
       SpansJsonl: string }
 
-type S2LiveResource = { Client: S2.Client }
+type S2Resource =
+    { Client: S2.Client
+      Kind: string
+      Endpoint: string option
+      LocalRoot: string option }
 
-module S2LiveResource =
+module S2Resource =
     let basin name resource = resource.Client |> S2.basin name
 
 type WorkloadContext =
@@ -17,7 +21,7 @@ type WorkloadContext =
       Root: string
       Traces: TraceStore
       Seed: int
-      S2: S2LiveResource option
+      S2: S2Resource option
       NextOperationId: unit -> int
       EmitSpan: string -> (string * string) list -> Async<unit> }
 
@@ -28,7 +32,7 @@ module WorkloadContext =
         | None -> failwith "workload requires s2LiveFromEnv or s2Lite but no S2 resource was declared"
 
     let s2Basin name ctx =
-        ctx |> requireS2 |> S2LiveResource.basin name
+        ctx |> requireS2 |> S2Resource.basin name
 
 type ProofOperationOptions =
     { ClientId: string option

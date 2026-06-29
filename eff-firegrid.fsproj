@@ -20,6 +20,7 @@
     <Compile Include="src/Foundation/StateView.fs" />
     <Compile Include="src/Foundation/KvStore.fs" />
     <Compile Include="src/Foundation/Durable/Semantics.fs" />
+    <Compile Include="src/Foundation/Durable/Api.fs" />
     <Compile Include="src/Foundation/Durable/S2Substrate.fs" />
     <Compile Include="src/Proofs/Proof.fs" />
     <Compile Include="src/Proofs/Reports.fs" />

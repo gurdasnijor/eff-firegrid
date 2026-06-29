@@ -38,10 +38,17 @@ Implemented slices:
   `Durable.log` records log emission in history so replay can skip duplicate
   emissions. The compiled proof covers direct time/log replay and a
   Monitor-style timer loop.
+- **Tier 1.4 ergonomic API lowering.**
+  `durable { ... }`, `Workflow.*`, `Activities.*`, and `DurableTask.*` provide
+  the first author-facing F# surface while lowering directly into the proven
+  replay terms. The compiled proof checks sequential calls, fan-out,
+  `WhenAny`, deterministic time, timers, and replay-safe logging through that
+  API.
 
 Next slices, still one layer + proof at a time:
 
-- an ergonomic F# CE/API that lowers to the proven terms instead of becoming the semantics.
+- bind the proven replay terms to the S2 two-stream substrate path: claim,
+  fenced commit, inbox delivery, and replay from `{key}/log`.
 
 One surprising constraint surfaced from your own code — see §1.
 

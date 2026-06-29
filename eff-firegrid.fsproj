@@ -35,6 +35,7 @@
     <Compile Include="src/Proofs/ProofBuilder.fs" />
     <Compile Include="src/Proofs/FoundationSubjectHistoryProof.fs" />
     <Compile Include="src/Proofs/FoundationStateViewProof.fs" />
+    <Compile Include="src/Proofs/FoundationKvStoreProof.fs" />
     <Compile Include="src/Proofs/Runner.fs" />
     <Compile Include="src/Proofs/DurableSemanticsProof.fs" />
     <Compile Include="src/Proofs/Registry.fs" />

@@ -23,6 +23,7 @@
     <Compile Include="src/Foundation/Durable/Api.fs" />
     <Compile Include="src/Foundation/Durable/S2Substrate.fs" />
     <Compile Include="src/Foundation/Durable/Stepper.fs" />
+    <Compile Include="src/Foundation/Durable/StepRecordCodec.fs" />
     <Compile Include="src/Proofs/Proof.fs" />
     <Compile Include="src/Proofs/Reports.fs" />
     <Compile Include="src/Proofs/S2Lite.fs" />

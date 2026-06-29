@@ -18,6 +18,7 @@
     <Compile Include="src/S2/Patterns.fs" />
     <Compile Include="src/Foundation/SubjectHistory.fs" />
     <Compile Include="src/Foundation/StateView.fs" />
+    <Compile Include="src/Foundation/KvStore.fs" />
     <Compile Include="src/Foundation/Durable/Semantics.fs" />
     <Compile Include="src/Foundation/Durable/S2Substrate.fs" />
     <Compile Include="src/Proofs/Proof.fs" />

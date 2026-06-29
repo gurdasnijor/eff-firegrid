@@ -6,6 +6,13 @@ module Property =
           Verifiers: Check<'result> list
           ExpectedFailure: string option }
 
+    type PropertyDraft<'result> =
+        { Resources: ResourceSpec list
+          Workload: (WorkloadContext -> Async<'result>) option
+          Verifiers: Check<'result> list
+          NegativeControls: NegativeControlSpec<'result> list
+          RequiresNegativeControl: bool }
+
     let private unsupportedResources resources =
         resources
         |> List.choose (function
@@ -242,9 +249,80 @@ module Property =
 
     let negativeControl<'result> name = NegativeControlBuilder<'result> name
 
+    type PropertyBuilder(name: string) =
+        member _.Yield(_) : PropertyDraft<unit> =
+            { Resources = []
+              Workload = None
+              Verifiers = []
+              NegativeControls = []
+              RequiresNegativeControl = false }
+
+        [<CustomOperation("resource")>]
+        member _.Resource(state: PropertyDraft<'result>, resource) =
+            { state with
+                Resources = state.Resources @ [ resource ] }
+
+        [<CustomOperation("resources")>]
+        member _.Resources(state: PropertyDraft<'result>, resources) =
+            { state with
+                Resources = state.Resources @ resources }
+
+        [<CustomOperation("s2LiveFromEnv")>]
+        member _.S2LiveFromEnv(state: PropertyDraft<'result>) =
+            { state with
+                Resources = state.Resources @ [ S2LiveFromEnv ] }
+
+        [<CustomOperation("s2Lite")>]
+        member _.S2Lite(state: PropertyDraft<'result>, root) =
+            { state with
+                Resources = state.Resources @ [ S2Lite root ] }
+
+        [<CustomOperation("processHost")>]
+        member _.ProcessHost(state: PropertyDraft<'result>, host) =
+            { state with
+                Resources = state.Resources @ [ ProcessHost host ] }
+
+        [<CustomOperation("workload")>]
+        member _.Workload(state: PropertyDraft<'previous>, workload: WorkloadContext -> Async<'result>) =
+            { Resources = state.Resources
+              Workload = Some workload
+              Verifiers = []
+              NegativeControls = []
+              RequiresNegativeControl = state.RequiresNegativeControl }
+
+        [<CustomOperation("verify")>]
+        member _.Verify(state: PropertyDraft<'result>, verifiers: Check<'result> list) =
+            { state with
+                Verifiers = state.Verifiers @ verifiers }
+
+        [<CustomOperation("verify")>]
+        member _.Verify(state: PropertyDraft<'result>, factory: Verifiers<'result> -> Check<'result> list) =
+            { state with
+                Verifiers = state.Verifiers @ factory (Verification.verifiers ()) }
+
+        [<CustomOperation("negativeControl")>]
+        member _.NegativeControl(state: PropertyDraft<'result>, control) =
+            { state with
+                NegativeControls = state.NegativeControls @ [ control ] }
+
+        [<CustomOperation("requiresNegativeControl")>]
+        member _.RequiresNegativeControl(state: PropertyDraft<'result>) =
+            { state with
+                RequiresNegativeControl = true }
+
+        member _.Run(state: PropertyDraft<'result>) =
+            match state.Workload with
+            | None -> failwithf "property '%s' must declare a workload" name
+            | Some workload ->
+                make name state.Resources workload state.Verifiers state.NegativeControls state.RequiresNegativeControl
+
+    let property name = PropertyBuilder name
+
 [<AutoOpen>]
 module PropertySyntax =
-    let property name workload verifiers =
+    let property name = Property.property name
+
+    let propertyWithChecks name workload verifiers =
         Property.make name [] workload verifiers [] false
 
     let propertyWith name resources workload verifiers =

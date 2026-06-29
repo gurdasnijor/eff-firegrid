@@ -15,6 +15,7 @@ Current implementation on `main` and the ergonomic proof-runner branch:
   readers, and no tautology-only `SELECT 1` proofs
 - canonical workload operation spans through `ProofOperation.run`
 - ergonomic verifier factories through `Verification.fs`
+- property authoring computation expression: `property "name" { workload ...; verify ... }`
 - runner-owned trial roots, `spans.jsonl`, and `report.json` (`Reports.fs`, `Runner.fs`)
 - CLI path through `proofs run`, `proofs list`, and `npm run proofs -- --proof <filter>`
 - current durable replay checks migrated out of `Harness.fs` into one property
@@ -312,19 +313,23 @@ let storeObjectSerialization =
             "Concurrent same-key object calls serialize through the S2-backed object log and do not lose writes."
 
         property (
-            propertyWithVerifiers "store.object-serialization-proof" workload (fun v ->
-                [ v.Expect.WorkloadResult
-                      "final counter value"
-                      {| CompletedCalls = 2
-                         MaxResult = 12
-                         Value = 12 |}
+            property "store.object-serialization-proof" {
+                workload workload
 
-                  v.Trace.Operation
-                      "counter operation recorded"
-                      (TraceOperationMatch.named "store.counter.add-concurrent"
-                       |> TraceOperationMatch.status "ok"
-                       |> TraceOperationMatch.outputContains "\"Value\":12"
-                       |> TraceOperationMatch.exactly 1) ]))
+                verify (fun v ->
+                    [ v.Expect.WorkloadResult
+                          "final counter value"
+                          {| CompletedCalls = 2
+                             MaxResult = 12
+                             Value = 12 |}
+
+                      v.Trace.Operation
+                          "counter operation recorded"
+                          (TraceOperationMatch.named "store.counter.add-concurrent"
+                           |> TraceOperationMatch.status "ok"
+                           |> TraceOperationMatch.outputContains "\"Value\":12"
+                           |> TraceOperationMatch.exactly 1) ])
+            })
     }
 ```
 
@@ -362,20 +367,19 @@ let objectLiveFencing =
 
                 workload StoreObjectLiveFencing.run
 
-                verify [
-                    Expect.workload "late owner did not change value" (fun r ->
-                        r.LateOwnerDidNotChangeValue)
+                verify (fun v ->
+                    [ v.Expect.Workload "late owner did not change value" (fun r ->
+                          r.LateOwnerDidNotChangeValue)
 
-                    TraceExpect.spanExists
-                        "host a was ready"
-                        "verification.host.ready"
-                        [ "host.name", "a" ]
+                      v.Trace.SpanExists
+                          "host a was ready"
+                          "verification.host.ready"
+                          [ "host.name", "a" ]
 
-                    TraceExpect.spanExists
-                        "host b was ready"
-                        "verification.host.ready"
-                        [ "host.name", "b" ]
-                ]
+                      v.Trace.SpanExists
+                          "host b was ready"
+                          "verification.host.ready"
+                          [ "host.name", "b" ] ])
             })
     }
 ```
@@ -403,9 +407,8 @@ property "effect-ledger-proof" {
 
     workload EffectLedgerProof.runHappyPath
 
-    verify [
-        Expect.workload "journaled step invariants hold" EffectLedgerProof.invariantsHold
-    ]
+    verify (fun v ->
+        [ v.Expect.Workload "journaled step invariants hold" EffectLedgerProof.invariantsHold ])
 
     negativeControl "broken result decoder is caught" {
         mutation (Mutation.replace "EffectLedger.decodeResult" EffectLedgerFaults.destructiveSplit)
@@ -538,7 +541,7 @@ For each selected proof property:
 17. Stop `s2 lite`, unless preservation is requested after a failure.
 18. Stop the OTLP receiver after final span flush.
 
-Checks such as `TraceExpect.spanExists "host a ready"` assert runner-observed
+Checks such as `v.Trace.SpanExists "host a ready"` assert runner-observed
 spans, not proof-local guesses.
 
 ## Operation History And Linearizability
@@ -741,7 +744,7 @@ Deliverables:
 5. workload result checks
 6. OTLP receiver/exporter writing `spans.jsonl`
 7. `TraceSql` backed by `chdb`
-8. `TraceExpect.spanExists`
+8. `TraceProof`, `TraceExpect.spanExists`, and verifier-factory helpers
 
 Acceptance criteria:
 
@@ -894,17 +897,16 @@ let subjectHistory =
 
                 workload FoundationSubjectHistoryProof.run
 
-                verify [
-                    Expect.workload "append and fold summary is valid" (fun result ->
-                        result.TailAdvanced
-                        && result.ConflictObserved
-                        && result.FoldObservedPendingTimer)
+                verify (fun v ->
+                    [ v.Expect.Workload "append and fold summary is valid" (fun result ->
+                          result.TailAdvanced
+                          && result.ConflictObserved
+                          && result.FoldObservedPendingTimer)
 
-                    TraceExpect.spanExists
-                        "proof append expected span emitted"
-                        "proof.subject_history.append_expected"
-                        [ "proof.subject", result.Subject ]
-                ]
+                      v.Trace.SpanExists
+                          "proof append expected span emitted"
+                          "proof.subject_history.append_expected"
+                          [ "proof.subject", result.Subject ] ])
             })
     }
 ```

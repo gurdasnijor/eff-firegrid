@@ -20,6 +20,7 @@ type InboxEnvelope =
       Message: InboxMessage }
 
 type StepRecord =
+    | WorkflowStarted of WorkflowName * Payload
     | HistoryEvent of Event
     | Command of StepCommand
     | CommandDispatchCheckpoint of dispatcher: string * nextSeqNum: int64

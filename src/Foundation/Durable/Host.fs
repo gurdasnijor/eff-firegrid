@@ -49,6 +49,20 @@ type DurableHostTickStatus<'a> =
     | Failed of DurableHostTickFailure * report: DurableHostTickReport<'a>
 
 [<RequireQualifiedAccess>]
+type DurableWorkflowHostFailure =
+    | StartFoldFailed of InboxFoldFailure
+    | LogReadFailed of string
+    | DecodeFailed of seqNum: int64 * error: string
+    | NoStart
+    | WorkflowNotFound of WorkflowName
+
+[<RequireQualifiedAccess>]
+type DurableWorkflowHostStatus =
+    | Ticked of DurableHostTickStatus<Payload>
+    | Deposed of expectedFence: string
+    | Failed of DurableWorkflowHostFailure
+
+[<RequireQualifiedAccess>]
 module DurableHostTickOptions =
     let create hostId timestamp =
         { HostId = hostId
@@ -232,4 +246,58 @@ module DurableHost =
         async {
             let! owned = S2Substrate.claim options.HostId pair
             return! runOwnedTick options activities owned program
+        }
+
+    let private startedWorkflow decode owned =
+        async {
+            try
+                let! decoded = S2Substrate.readLogText decode owned
+
+                let rec loop =
+                    function
+                    | [] -> Ok None
+                    | (seqNum, Error error) :: _ -> Error(DurableWorkflowHostFailure.DecodeFailed(seqNum, error))
+                    | (_, Ok(Incoming(WorkflowStarted(name, input)))) :: _ -> Ok(Some(name, input))
+                    | _ :: rest -> loop rest
+
+                return loop decoded
+            with error ->
+                return Error(DurableWorkflowHostFailure.LogReadFailed error.Message)
+        }
+
+    let runWorkflowTick options workflows activities owned =
+        async {
+            let! startFold =
+                InboxFold.runOnce
+                    StepRecordCodec.encode
+                    StepRecordCodec.decode
+                    InboxEnvelopeCodec.decode
+                    options.MaxInboxRecords
+                    owned
+
+            match startFold with
+            | InboxFoldStatus.Deposed expected -> return DurableWorkflowHostStatus.Deposed expected
+            | InboxFoldStatus.Failed failure ->
+                return DurableWorkflowHostStatus.Failed(DurableWorkflowHostFailure.StartFoldFailed failure)
+            | InboxFoldStatus.Folded _ ->
+                let! started = startedWorkflow StepRecordCodec.decode owned
+
+                match started with
+                | Error failure -> return DurableWorkflowHostStatus.Failed failure
+                | Ok None -> return DurableWorkflowHostStatus.Failed DurableWorkflowHostFailure.NoStart
+                | Ok(Some(workflowName, input)) ->
+                    match WorkflowRegistry.require (WorkflowName.value workflowName) workflows with
+                    | Error(DurableRegistryError.WorkflowNotFound missing) ->
+                        return DurableWorkflowHostStatus.Failed(DurableWorkflowHostFailure.WorkflowNotFound missing)
+                    | Error error ->
+                        return DurableWorkflowHostStatus.Failed(DurableWorkflowHostFailure.LogReadFailed(string error))
+                    | Ok factory ->
+                        let! tick = runOwnedTick options activities owned (factory input)
+                        return DurableWorkflowHostStatus.Ticked tick
+        }
+
+    let claimAndRunWorkflowTick options workflows activities pair =
+        async {
+            let! owned = S2Substrate.claim options.HostId pair
+            return! runWorkflowTick options workflows activities owned
         }

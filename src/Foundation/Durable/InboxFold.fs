@@ -95,7 +95,7 @@ module InboxFold =
         | StartWorkflow _
         | RaiseSignal _ -> []
 
-    let private recordsFor inboxSeqNum envelope =
+    let private recordsFor inboxSeqNum (envelope: InboxEnvelope) =
         let events = eventsFor envelope.Message
 
         let eventRecords = events |> List.map (HistoryEvent >> Incoming)
@@ -107,7 +107,7 @@ module InboxFold =
             | CompleteActivity _
             | FireTimer _ -> []
 
-        let accepted =
+        let accepted: InboxFoldedMessage =
             { InboxSeqNum = inboxSeqNum
               Envelope = envelope
               Events = events }
@@ -118,9 +118,15 @@ module InboxFold =
           yield! eventRecords
           yield Incoming(InboxSourceHighwater(envelope.Source, envelope.SourceSeqNum + 1L)) ]
 
-    let private selectFresh highwater inboxRecords =
-        let rec loop state accepted duplicates records =
-            function
+    let private selectFresh highwater (inboxRecords: (int64 * InboxEnvelope) list) =
+        let rec loop
+            (state: Map<string, int64>)
+            (accepted: InboxFoldedMessage list)
+            duplicates
+            (records: HistoryEntry<StepRecord> list)
+            (remaining: (int64 * InboxEnvelope) list)
+            =
+            match remaining with
             | [] -> accepted, duplicates, records
             | (inboxSeqNum, envelope) :: rest ->
                 let nextSeen = state |> Map.tryFind envelope.Source |> Option.defaultValue 0L

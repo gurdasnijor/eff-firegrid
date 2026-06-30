@@ -167,12 +167,24 @@ Implemented slices:
   history, not a host process cache. The compiled proof covers empty instances,
   folded starts that still need a host step, waiting status from replay,
   completed status from signal-delivered history, and missing workflow failure.
+- **Tier 2.13 ergonomic runtime facade.**
+  `DurableRuntime.create` closes over an S2 basin, workflow registry, activity
+  registry, and host options to expose the first consumable developer surface:
+  generated-instance `Client.Start`, deterministic `Client.StartWith`,
+  runtime-isolated monotonic `Client.RaiseSignal`, deterministic
+  `Client.RaiseSignalWith`, runtime-bound `Client.GetStatus`, `Host.RunOnce`,
+  and bounded `Host.RunUntilIdle`. The wrapper still delegates to the proven
+  substrate/client/host layers; it does not introduce a daemon scheduler or a
+  new commit path. The compiled proof covers generated starts, completion of an
+  activity workflow through `RunUntilIdle`, runtime status observation,
+  isolated monotonic signal sources, and signal workflow completion through the
+  runtime host.
 
 Next slices, still one layer + proof at a time:
 
-- add generated instance ids, ergonomic source sequence generation for
-  `RaiseSignal`, and the higher-level `DurableRuntime.create` wrapper over
-  `startWith` / `raiseSignalWith` / `getStatusWith`.
+- add API polish around registration/configuration, public examples, and
+  packaging boundaries so application code can consume the runtime without
+  reaching into the lower substrate modules.
 
 One surprising constraint surfaced from your own code — see §1.
 

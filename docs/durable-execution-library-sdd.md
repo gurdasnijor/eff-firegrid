@@ -361,10 +361,13 @@ Proof obligations:
 
 ### L4 Test Host
 
-Expose a test-first harness that hides S2Lite and proof boilerplate:
+Implemented in the proof harness: `Eff.Proofs.DurableTestHost` provisions an
+isolated S2 basin from the declared proof S2 resource, returns a tracked app
+client and worker, exposes durable-status assertions, and cleans up tracked
+instance streams.
 
 ```fsharp
-let! host = DurableTestHost.start app
+let! host = DurableTestHost.start ctx app
 let! instance = host.client.start checkout "order-123"
 do! host.worker.runUntilIdle instance
 host.expect.completed instance "charged:reserved:order-123"

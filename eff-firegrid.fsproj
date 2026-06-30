@@ -45,6 +45,7 @@
     <Compile Include="src/Proofs/Verification.fs" />
     <Compile Include="src/Proofs/Property.fs" />
     <Compile Include="src/Proofs/ProofBuilder.fs" />
+    <Compile Include="src/Proofs/DurableTestHost.fs" />
     <Compile Include="src/Proofs/FoundationSubjectHistoryProof.fs" />
     <Compile Include="src/Proofs/FoundationStateViewProof.fs" />
     <Compile Include="src/Proofs/FoundationKvStoreProof.fs" />
@@ -65,6 +66,7 @@
     <Compile Include="src/Proofs/DurableStatusProof.fs" />
     <Compile Include="src/Proofs/DurableRuntimeProof.fs" />
     <Compile Include="src/Proofs/DurableAppFacadeProof.fs" />
+    <Compile Include="src/Proofs/DurableTestHostProof.fs" />
     <Compile Include="src/Proofs/Registry.fs" />
     <Compile Include="src/Program.fs" />
   </ItemGroup>

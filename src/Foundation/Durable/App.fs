@@ -88,6 +88,15 @@ type DurableAppWorkflowStatus =
     | Completed of workflow: string * output: string
     | Failed of DurableAppStatusFailure
 
+type DurableAppWorkerInstanceResult =
+    { InstanceId: InstanceId
+      Ticks: DurableWorkflowHostStatus list
+      Active: bool }
+
+type DurableAppWorkerPass =
+    { Instances: DurableAppWorkerInstanceResult list
+      ActiveInstances: int }
+
 type DurableAppClient internal (runtime: DurableRuntime) =
     static member private StartResult =
         function
@@ -177,7 +186,11 @@ type DurableAppClient internal (runtime: DurableRuntime) =
 type DurableAppWorker =
     { runOnce: InstanceId -> Async<DurableWorkflowHostStatus>
       runUntilIdle: InstanceId -> Async<DurableWorkflowHostStatus list>
-      runUntilIdleWith: int -> InstanceId -> Async<DurableWorkflowHostStatus list> }
+      runUntilIdleWith: int -> InstanceId -> Async<DurableWorkflowHostStatus list>
+      discover: unit -> Async<InstanceId list>
+      runReady: unit -> Async<DurableAppWorkerPass>
+      runReadyWith: int -> Async<DurableAppWorkerPass>
+      runForever: System.Threading.CancellationToken -> Async<unit> }
 
 type private ActivityRegistration =
     { Name: string
@@ -369,6 +382,69 @@ module DurableApp =
         let (DurableStorage basin) = storage
         DurableRuntime.create options basin (workflows app) (activities app)
 
+    let private discoverInstances basin =
+        async {
+            let! streams = basin |> S2.listStreamsWith ""
+
+            return
+                streams
+                |> List.choose (fun stream ->
+                    if stream.DeletedAt.IsNone && stream.Name.EndsWith("/in") then
+                        stream.Name.Substring(0, stream.Name.Length - 3) |> InstanceId.create |> Some
+                    else
+                        None)
+                |> List.distinct
+        }
+
+    let private checkpointed =
+        function
+        | CommandDispatchCheckpointResult.Checkpointed _ -> true
+        | CommandDispatchCheckpointResult.NotRequired
+        | CommandDispatchCheckpointResult.Deposed _
+        | CommandDispatchCheckpointResult.Failed _ -> false
+
+    let private activityReportActive (report: ActivityCommandAdapterReport) =
+        not (List.isEmpty report.Completed)
+        || report.AlreadyPublished > 0
+        || report.Ignored > 0
+        || checkpointed report.Checkpoint
+
+    let private timerReportActive (report: TimerCommandAdapterReport) =
+        not (List.isEmpty report.Published)
+        || report.AlreadyPublished > 0
+        || report.Canceled > 0
+        || report.Ignored > 0
+        || checkpointed report.Checkpoint
+
+    let private tickReportActive (report: DurableHostTickReport<Payload>) =
+        match report.Inbox with
+        | Some inbox when inbox.Commit.IsSome -> true
+        | _ ->
+            match report.Step with
+            | Some(DurableHostStatus.Committed _) -> true
+            | _ ->
+                match report.Signals with
+                | Some signal when signal.Delivered.IsSome || signal.AlreadyDelivered > 0 -> true
+                | _ ->
+                    match report.Activities with
+                    | Some activity when activityReportActive activity -> true
+                    | _ ->
+                        match report.Timers with
+                        | Some timer when timerReportActive timer -> true
+                        | _ -> false
+
+    let private tickActive =
+        function
+        | DurableWorkflowHostStatus.Ticked(DurableHostTickStatus.Advanced report) -> tickReportActive report
+        | DurableWorkflowHostStatus.Ticked(DurableHostTickStatus.Completed(_, report))
+        | DurableWorkflowHostStatus.Ticked(DurableHostTickStatus.Waiting(_, _, report))
+        | DurableWorkflowHostStatus.Ticked(DurableHostTickStatus.Deposed(_, report))
+        | DurableWorkflowHostStatus.Ticked(DurableHostTickStatus.Failed(_, report)) -> tickReportActive report
+        | DurableWorkflowHostStatus.Deposed _
+        | DurableWorkflowHostStatus.Failed _ -> false
+
+    let private ticksActive ticks = ticks |> List.exists tickActive
+
     let clientWith (config: DurableAppClientConfig) app =
         let runtime =
             runtimeFrom (DurableRuntimeOptions.create "durable-app-client") config.Storage app
@@ -388,10 +464,52 @@ module DurableApp =
                 MaxRunUntilIdleTicks = config.MaxRunUntilIdleTicks |> Option.defaultValue 100 }
 
         let runtime = runtimeFrom options config.Storage app
+        let (DurableStorage basin) = config.Storage
+
+        let discover () = discoverInstances basin
+
+        let runReadyWith maxInstances =
+            async {
+                if maxInstances < 1 then
+                    invalidArg (nameof maxInstances) "maxInstances must be positive"
+
+                let! instances = discover ()
+                let results = ResizeArray<DurableAppWorkerInstanceResult>()
+
+                for instanceId in instances |> List.truncate maxInstances do
+                    let! ticks = runtime.Host.RunUntilIdle instanceId
+
+                    results.Add(
+                        { InstanceId = instanceId
+                          Ticks = ticks
+                          Active = ticksActive ticks }
+                    )
+
+                let instances = List.ofSeq results
+
+                return
+                    { Instances = instances
+                      ActiveInstances = instances |> List.filter (fun result -> result.Active) |> List.length }
+            }
+
+        let runReady () = runReadyWith 100
+
+        let runForever (cancellationToken: System.Threading.CancellationToken) =
+            async {
+                while not cancellationToken.IsCancellationRequested do
+                    let! pass = runReady ()
+
+                    if pass.ActiveInstances = 0 then
+                        do! Async.Sleep 250
+            }
 
         { runOnce = runtime.Host.RunOnce
           runUntilIdle = runtime.Host.RunUntilIdle
-          runUntilIdleWith = runtime.Host.RunUntilIdleWith }
+          runUntilIdleWith = runtime.Host.RunUntilIdleWith
+          discover = discover
+          runReady = runReady
+          runReadyWith = runReadyWith
+          runForever = runForever }
 
     let worker (config: DurableAppEnvironmentWorkerConfig) app =
         let storage = DurableAppEnvironment.storage config.Environment config.BasinName

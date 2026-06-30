@@ -410,6 +410,14 @@ let! host = DurableTestHost.start ctx app
 let! instance = host.client.start checkout "order-123"
 do! host.worker.runUntilIdle instance
 host.expect.completed instance "charged:reserved:order-123"
+host.expect.completedOf checkout instance "charged:reserved:order-123"
+
+let! completed =
+    DurableTestHost.runUntilCompleted
+        host
+        checkout
+        "order-456"
+        "charged:reserved:order-456"
 ```
 
 Proof obligations:
@@ -417,6 +425,7 @@ Proof obligations:
 - test host provisions isolated storage per test
 - all created instance streams are cleaned up or reported
 - assertions replay durable state, not in-memory shortcuts
+- typed assertions read through workflow handles and decode completion payloads
 
 ### L5 Environment Bootstrap
 
@@ -523,6 +532,25 @@ Proof obligations:
 - timer branch completes through the facade race API
 - waiting status still reports a durable race need
 - typed status reads race workflow completion
+
+### L9 Test Host Polish
+
+Implemented in the proof harness: `DurableTestClient.statusOf`,
+`DurableTestExpect.completedOf`, and `DurableTestHost.runUntilCompleted` let
+proofs and examples assert typed workflow completion without manually repeating
+start, run-until-idle, status read, and completion matching.
+
+```fsharp
+let! host = DurableTestHost.start ctx app
+let! completed = DurableTestHost.runUntilCompleted host checkout "order-123" "charged:order-123"
+```
+
+Proof obligations:
+
+- typed expectations read status through the workflow handle
+- the helper starts the workflow, drives the worker to idle, and verifies typed
+  completion
+- tracked instances created by the helper are cleaned up by the host cleanup
 
 ## Example Target
 

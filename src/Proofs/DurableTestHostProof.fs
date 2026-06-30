@@ -11,6 +11,8 @@ module DurableTestHostProof =
         { HostProvisioned: bool
           TypedWorkflowCompleted: bool
           CompletionAssertionUsedDurableStatus: bool
+          TypedCompletionAssertionUsedWorkflowHandle: bool
+          RunUntilCompletedHelperWorked: bool
           CleanupRemovedTrackedInstance: bool }
 
     let private addOne =
@@ -67,6 +69,13 @@ module DurableTestHostProof =
                     | Some instanceId -> host.expect.completed instanceId "42"
                     | None -> async { return false }
 
+                let! typedCompletionAssertionUsedWorkflowHandle =
+                    match instance with
+                    | Some instanceId -> host.expect.completedOf typedMath instanceId 42
+                    | None -> async { return false }
+
+                let! runUntilCompletedHelperWorked = DurableTestHost.runUntilCompleted host typedMath 32 43
+
                 do! host.cleanup ()
 
                 let! cleanupRemovedTrackedInstance =
@@ -78,6 +87,8 @@ module DurableTestHostProof =
                     { HostProvisioned = host.basinName.StartsWith("durable-test-host-")
                       TypedWorkflowCompleted = typedWorkflowCompleted
                       CompletionAssertionUsedDurableStatus = completionAssertionUsedDurableStatus
+                      TypedCompletionAssertionUsedWorkflowHandle = typedCompletionAssertionUsedWorkflowHandle
+                      RunUntilCompletedHelperWorked = runUntilCompletedHelperWorked
                       CleanupRemovedTrackedInstance = cleanupRemovedTrackedInstance }
 
                 do!
@@ -87,6 +98,8 @@ module DurableTestHostProof =
                           "test_host.provisioned", string result.HostProvisioned
                           "test_host.completed", string result.TypedWorkflowCompleted
                           "test_host.assertion", string result.CompletionAssertionUsedDurableStatus
+                          "test_host.typed_assertion", string result.TypedCompletionAssertionUsedWorkflowHandle
+                          "test_host.run_until_completed", string result.RunUntilCompletedHelperWorked
                           "test_host.cleanup", string result.CleanupRemovedTrackedInstance ]
 
                 return result
@@ -102,6 +115,10 @@ module DurableTestHostProof =
                   v.Expect.Workload "test host completes typed workflow" (fun result -> result.TypedWorkflowCompleted)
                   v.Expect.Workload "test host assertion uses durable status" (fun result ->
                       result.CompletionAssertionUsedDurableStatus)
+                  v.Expect.Workload "test host typed assertion uses workflow handle" (fun result ->
+                      result.TypedCompletionAssertionUsedWorkflowHandle)
+                  v.Expect.Workload "test host runUntilCompleted helper works" (fun result ->
+                      result.RunUntilCompletedHelperWorked)
                   v.Expect.Workload "test host cleanup removes tracked instance" (fun result ->
                       result.CleanupRemovedTrackedInstance)
                   v.Trace.SpanExists
@@ -115,6 +132,8 @@ module DurableTestHostProof =
                           OutputContains =
                               [ "HostProvisioned"
                                 "CompletionAssertionUsedDurableStatus"
+                                "TypedCompletionAssertionUsedWorkflowHandle"
+                                "RunUntilCompletedHelperWorked"
                                 "CleanupRemovedTrackedInstance" ]
                           Count = Some 1 }) ])
         }

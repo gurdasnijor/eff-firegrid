@@ -32,6 +32,8 @@ type DurableTestClient internal (inner: DurableAppClient, track: InstanceId -> u
 
     member _.status instanceId = inner.status instanceId
 
+    member _.statusOf (workflow: Workflow<'input, 'output>) instanceId = inner.statusOf workflow instanceId
+
 type DurableTestExpect internal (client: DurableTestClient) =
     member _.completed instanceId expectedOutput =
         async {
@@ -47,6 +49,16 @@ type DurableTestExpect internal (client: DurableTestClient) =
         async {
             let! status = client.status instanceId
             return status = DurableAppWorkflowStatus.NotFound
+        }
+
+    member _.completedOf (workflow: Workflow<'input, 'output>) instanceId expectedOutput =
+        async {
+            let! status = client.statusOf workflow instanceId
+
+            return
+                match status with
+                | DurableAppTypedWorkflowStatus.Completed output -> output = expectedOutput
+                | _ -> false
         }
 
 type DurableTestHost =
@@ -114,4 +126,20 @@ module DurableTestHost =
                   expect = DurableTestExpect client
                   basinName = basinName
                   cleanup = cleanup }
+        }
+
+    let runUntilCompleted
+        (host: DurableTestHost)
+        (workflow: Workflow<'input, 'output>)
+        (input: 'input)
+        (expectedOutput: 'output)
+        =
+        async {
+            let! start = host.client.start workflow input
+
+            match start with
+            | DurableAppStartResult.Rejected _ -> return false
+            | DurableAppStartResult.Started instanceId ->
+                let! _ = host.worker.runUntilIdle instanceId
+                return! host.expect.completedOf workflow instanceId expectedOutput
         }

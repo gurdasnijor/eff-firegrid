@@ -81,7 +81,6 @@ let startInstance =
     | DurableAppStartResult.Rejected failure -> failwith ("start failed: " + string failure)
 
 module D = Eff.Foundation.Durable.App.Durable
-module T = Eff.Foundation.Durable.App.DurableTask
 
 let reserve =
     Activity.define "reserve" (fun orderId -> async { return "reserved:" + orderId })
@@ -114,13 +113,10 @@ let approvalOrTimeout =
         durable {
             let deadline = int64 deadlineText
 
-            let! winner = D.any [ T.signal approved; T.timer deadline ]
-
-            match winner with
-            | EventWon(_, Signal "approved", approver) -> return "approved:" + approver
-            | EventWon(_, Timer _, _) -> return "timed-out"
-            | ActivityWon _ -> return "unexpected"
-            | EventWon(_, Signal name, _) -> return "unexpected-signal:" + name
+            return!
+                D.anyOf
+                    [ D.raceSignal approved (fun approver -> "approved:" + approver)
+                      D.raceTimer deadline "timed-out" ]
         })
 
 let typedMath =

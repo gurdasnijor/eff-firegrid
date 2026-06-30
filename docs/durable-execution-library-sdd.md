@@ -160,11 +160,16 @@ module Signal =
         decode: (string -> 'payload) ->
         Signal<'payload>
 
+type DurableRace<'result>
+
 module Durable =
     val call : Activity<'input, 'output> -> 'input -> Durable<'output>
     val waitForSignal : Signal<'payload> -> Durable<'payload>
     val sleepUntil : deadline: int64 -> Durable<unit>
     val any : RaceTask seq -> Durable<RaceResult>
+    val raceSignal : Signal<'payload> -> ('payload -> 'result) -> DurableRace<'result>
+    val raceTimer : deadline: int64 -> 'result -> DurableRace<'result>
+    val anyOf : DurableRace<'result> seq -> Durable<'result>
     val currentTime : Durable<int64>
     val log : message: string -> Durable<unit>
 
@@ -274,6 +279,9 @@ Implemented and proof-backed today:
 - `DurableAppClient.statusOf` reads workflow-specific status through a workflow
   handle, decodes completion payloads through that handle, and fails closed on
   workflow mismatch.
+- `Durable.raceSignal`, `Durable.raceTimer`, and `Durable.anyOf` expose
+  facade-level signal/timer races without forcing application workflows to
+  match raw `RaceResult` indexes.
 - The compiled proof runner validates the above against pure laws and ephemeral
   S2 streams.
 
@@ -488,6 +496,33 @@ Proof obligations:
 - waiting status is scoped by the supplied workflow handle
 - the wrong workflow handle fails closed instead of decoding a foreign payload
 - output decode exceptions are reported as typed status failures
+
+### L8 Race Facade Polish
+
+Implemented: app workflows can express signal/timer races by mapping each branch
+to the workflow's own result type.
+
+```fsharp
+let approvalOrTimeout =
+    Workflow.define "approval-or-timeout" (fun deadline ->
+        durable {
+            return!
+                Durable.anyOf
+                    [ Durable.raceSignal approved (fun approver -> "approved:" + approver)
+                      Durable.raceTimer deadline "timed-out" ]
+        })
+```
+
+The lower `Durable.any` remains available for tests and diagnostics, but normal
+app code should not need to match `ActivityWon`, `EventWon`, race indexes, or raw
+`EventKey` values for simple signal/timer races.
+
+Proof obligations:
+
+- signal branch completes through the facade race API
+- timer branch completes through the facade race API
+- waiting status still reports a durable race need
+- typed status reads race workflow completion
 
 ## Example Target
 

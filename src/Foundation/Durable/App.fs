@@ -28,6 +28,11 @@ type Signal<'payload> =
           Encode: 'payload -> Payload
           Decode: Payload -> 'payload }
 
+type DurableRace<'result> =
+    internal
+        { Task: RaceTask
+          Project: RaceResult -> 'result option }
+
 type DurableStorage = private DurableStorage of S2.Basin
 
 type DurableAppClientConfig = { Storage: DurableStorage }
@@ -308,6 +313,32 @@ module Durable =
 
     let any tasks =
         Eff.Foundation.Durable.Workflow.any tasks
+
+    let raceSignal (signal: Signal<'payload>) project : DurableRace<'result> =
+        { Task = DurableTask.signal signal
+          Project =
+            function
+            | EventWon(_, Signal name, payload) when name = signal.Name -> Some(project (signal.Decode payload))
+            | _ -> None }
+
+    let raceTimer deadline result : DurableRace<'result> =
+        { Task = DurableTask.timer deadline
+          Project =
+            function
+            | EventWon(_, Timer actual, _) when actual = deadline -> Some result
+            | _ -> None }
+
+    let anyOf races =
+        let races = races |> List.ofSeq
+
+        races
+        |> List.map (fun race -> race.Task)
+        |> Eff.Foundation.Durable.Workflow.any
+        |> Eff.Foundation.Durable.Durable.map (fun winner ->
+            races
+            |> List.tryPick (fun race -> race.Project winner)
+            |> Option.defaultWith (fun () ->
+                failwith ("durable race winner did not match a facade race task: " + string winner)))
 
     let currentTime = Eff.Foundation.Durable.Workflow.currentTime
 

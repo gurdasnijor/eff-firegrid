@@ -22,20 +22,23 @@ type DurableHostTickOptions =
     { HostId: string
       Timestamp: int64
       MaxInboxRecords: int
-      MaxActivityCommands: int }
+      MaxActivityCommands: int
+      MaxTimerCommands: int }
 
 type DurableHostTickReport<'a> =
     { Key: StorageKey
       Fence: FenceToken
       Inbox: InboxFoldReport option
       Step: DurableHostStatus<'a> option
-      Activities: ActivityCommandAdapterReport option }
+      Activities: ActivityCommandAdapterReport option
+      Timers: TimerCommandAdapterReport option }
 
 [<RequireQualifiedAccess>]
 type DurableHostTickFailure =
     | InboxFailed of InboxFoldFailure
     | StepFailed of DurableHostFailure
     | ActivityFailed of ActivityCommandAdapterFailure
+    | TimerFailed of TimerCommandAdapterFailure
 
 [<RequireQualifiedAccess>]
 type DurableHostTickStatus<'a> =
@@ -51,7 +54,8 @@ module DurableHostTickOptions =
         { HostId = hostId
           Timestamp = timestamp
           MaxInboxRecords = 100
-          MaxActivityCommands = 100 }
+          MaxActivityCommands = 100
+          MaxTimerCommands = 100 }
 
 [<RequireQualifiedAccess>]
 module DurableHost =
@@ -60,7 +64,8 @@ module DurableHost =
           Fence = owned.Fence
           Inbox = None
           Step = None
-          Activities = None }
+          Activities = None
+          Timers = None }
 
     let private decodeLog decoded =
         let rec loop records =
@@ -128,6 +133,17 @@ module DurableHost =
            | CommandDispatchCheckpointResult.Deposed _
            | CommandDispatchCheckpointResult.Failed _ -> false
 
+    let private timersMadeProgress report =
+        not (List.isEmpty report.Published)
+        || report.AlreadyPublished > 0
+        || report.Canceled > 0
+        || report.Ignored > 0
+        || match report.Checkpoint with
+           | CommandDispatchCheckpointResult.Checkpointed _ -> true
+           | CommandDispatchCheckpointResult.NotRequired
+           | CommandDispatchCheckpointResult.Deposed _
+           | CommandDispatchCheckpointResult.Failed _ -> false
+
     let runOwnedTick options activities (owned: OwnedKey) program =
         async {
             let initial = emptyTickReport owned
@@ -177,17 +193,39 @@ module DurableHost =
                         return
                             DurableHostTickStatus.Failed(DurableHostTickFailure.ActivityFailed failure, reportAfterStep)
                     | ActivityCommandAdapterStatus.Processed activityReport ->
-                        let report =
+                        let reportAfterActivities =
                             { reportAfterStep with
                                 Activities = Some activityReport }
 
-                        match step with
-                        | DurableHostStatus.Waiting(opId, need) when
-                            not (inboxMadeProgress inboxReport)
-                            && not (activitiesMadeProgress activityReport)
-                            ->
-                            return DurableHostTickStatus.Waiting(opId, need, report)
-                        | _ -> return DurableHostTickStatus.Advanced report
+                        let! timer =
+                            TimerCommandAdapter.runOnce
+                                StepRecordCodec.decode
+                                options.Timestamp
+                                options.MaxTimerCommands
+                                owned
+
+                        match timer with
+                        | TimerCommandAdapterStatus.Deposed expected ->
+                            return DurableHostTickStatus.Deposed(expected, reportAfterActivities)
+                        | TimerCommandAdapterStatus.Failed failure ->
+                            return
+                                DurableHostTickStatus.Failed(
+                                    DurableHostTickFailure.TimerFailed failure,
+                                    reportAfterActivities
+                                )
+                        | TimerCommandAdapterStatus.Processed timerReport ->
+                            let report =
+                                { reportAfterActivities with
+                                    Timers = Some timerReport }
+
+                            match step with
+                            | DurableHostStatus.Waiting(opId, need) when
+                                not (inboxMadeProgress inboxReport)
+                                && not (activitiesMadeProgress activityReport)
+                                && not (timersMadeProgress timerReport)
+                                ->
+                                return DurableHostTickStatus.Waiting(opId, need, report)
+                            | _ -> return DurableHostTickStatus.Advanced report
         }
 
     let claimAndRunTick options activities pair program =

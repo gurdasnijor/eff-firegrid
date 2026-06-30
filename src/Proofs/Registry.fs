@@ -14,4 +14,5 @@ module Registry =
           DurableActivityAdapterProof.proof
           DurableInboxFoldProof.proof
           DurableActivityInboxProof.proof
-          DurableHostTickProof.proof ]
+          DurableHostTickProof.proof
+          DurableTimerAdapterProof.proof ]

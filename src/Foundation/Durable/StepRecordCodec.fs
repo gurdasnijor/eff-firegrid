@@ -64,6 +64,7 @@ module InboxEnvelopeCodec =
         | StartWorkflow(name, input) -> [ "start"; workflowNameText name; input ]
         | RaiseSignal(name, payload) -> [ "signal"; name; payload ]
         | CompleteActivity(opId, value) -> [ "activity-completed"; opText opId; value ]
+        | FireTimer(opId, deadline) -> [ "timer-fired"; opText opId; string deadline ]
 
     let encode envelope =
         fields (
@@ -78,6 +79,9 @@ module InboxEnvelopeCodec =
         | "signal" :: name :: payload :: [] -> Ok(RaiseSignal(name, payload))
         | "activity-completed" :: opId :: value :: [] ->
             parseOp opId |> Result.map (fun id -> CompleteActivity(id, value))
+        | "timer-fired" :: opId :: deadline :: [] ->
+            parseOp opId
+            |> Result.bind (fun id -> parseInt64 "deadline" deadline |> Result.map (fun value -> FireTimer(id, value)))
         | tag :: _ -> Error("unknown inbox message tag: " + tag)
         | [] -> Error "missing inbox message tag"
 
@@ -182,6 +186,7 @@ module StepRecordCodec =
         | StartWorkflow(name, input) -> "start" :: [ workflowNameText name; input ]
         | RaiseSignal(name, payload) -> "signal" :: [ name; payload ]
         | CompleteActivity(opId, value) -> "activity-completed" :: [ opText opId; value ]
+        | FireTimer(opId, deadline) -> "timer-fired" :: [ opText opId; string deadline ]
 
     let private inboxEnvelopeFields envelope =
         envelope.Source
@@ -300,6 +305,9 @@ module StepRecordCodec =
         | "signal" :: name :: payload :: [] -> Ok(RaiseSignal(name, payload))
         | "activity-completed" :: opId :: value :: [] ->
             parseOp opId |> Result.map (fun id -> CompleteActivity(id, value))
+        | "timer-fired" :: opId :: deadline :: [] ->
+            parseOp opId
+            |> Result.bind (fun id -> parseInt64 "deadline" deadline |> Result.map (fun value -> FireTimer(id, value)))
         | tag :: _ -> Error("unknown inbox message tag: " + tag)
         | [] -> Error "missing inbox message tag"
 

@@ -55,6 +55,7 @@ module DurableInboxFoldProof =
 
     let private checkInboxEnvelopeCodecRoundTrips () =
         [ envelope "activity-worker" 7L (CompleteActivity(OpId 0, "reserved"))
+          envelope "timer" 9L (FireTimer(OpId 1, 500L))
           envelope "client" 2L (RaiseSignal("approved", "yes"))
           envelope "starter" 0L (StartWorkflow(WorkflowName "checkout", "order-1")) ]
         |> List.forall (fun value -> InboxEnvelopeCodec.decode (InboxEnvelopeCodec.encode value) = Ok value)

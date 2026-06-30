@@ -91,6 +91,7 @@ module InboxFold =
     let private eventsFor =
         function
         | CompleteActivity(opId, value) -> [ ActivityCompleted(opId, value) ]
+        | FireTimer(opId, _) -> [ TimerFired opId ]
         | StartWorkflow _
         | RaiseSignal _ -> []
 

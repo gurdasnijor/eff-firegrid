@@ -70,10 +70,13 @@ Implemented and proof-backed today:
   committed `CallActivity` commands, publishes `CompleteActivity` envelopes to
   `{key}/in`, and checkpoints only after inbox publication.
 - `InboxFold.runOnce` admits fresh `{key}/in` arrivals into the fenced log,
-  records inbox cursor/highwater progress, and folds activity completions into
-  replay history.
+  records inbox cursor/highwater progress, and folds activity completions and
+  timer firings into replay history.
+- `TimerCommandAdapter.runOnce` consumes committed timer commands, publishes
+  due timer firings to `{key}/in`, and leaves future timers revisit-able.
 - `DurableHost.runOwnedTick` / `claimAndRunTick` compose one host operation:
-  fold inbox, step workflow replay, and dispatch committed activity commands.
+  fold inbox, step workflow replay, and dispatch committed activity/timer
+  commands.
 - The compiled proof runner validates the above against pure laws and ephemeral
   S2 streams.
 
@@ -311,7 +314,7 @@ Proof obligations:
 Implemented: expose `DurableHost.runOwnedTick` and
 `DurableHost.claimAndRunTick` as the first composed host operation. The tick
 claims or uses an owned instance, folds inbox arrivals, steps deterministic
-workflow replay, and dispatches activity commands in one typed result.
+workflow replay, and dispatches activity/timer commands in one typed result.
 
 Proof obligations:
 
@@ -324,15 +327,19 @@ Proof obligations:
 
 ### L6 Timer Adapter
 
-Consume `ScheduleTimer` and `CancelTimer` commands and admit `TimerFired` when
-the deadline is reached.
+Implemented: consume `ScheduleTimer` and `CancelTimer` commands, publish due
+`FireTimer` inbox envelopes, and let `InboxFold.runOnce` admit `TimerFired`
+history only through the inbox path. Future timers remain uncheckpointed so the
+adapter revisits them when time advances.
 
 Proof obligations:
 
 - scheduled timers fire no earlier than their deadline
+- scheduled timers fire at or after their deadline through inbox admission
 - canceled timers do not fire
 - retry does not create two effective timer firings
 - timer outcomes replay deterministically from history
+- composed host ticks advance `Workflow.sleepUntil`
 
 ### L7 Durable Client
 

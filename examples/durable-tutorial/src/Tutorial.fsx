@@ -36,35 +36,31 @@ let nowMillis () : int64 = jsNative
 [<Emit("process.env[$0] || $1")>]
 let envOr (_name: string) (_fallback: string) : string = jsNative
 
-let workflowText (WorkflowName name) = name
-
 let instanceText (instanceId: InstanceId) = InstanceId.value instanceId
 
 let needText =
     function
-    | NeedsActivity activity -> "activity:" + activity.Name
-    | NeedsActivities activities -> "activities:" + string (List.length activities)
-    | NeedsEvent(Timer deadline) -> "timer:" + string deadline
-    | NeedsEvent(Signal name) -> "signal:" + name
-    | NeedsRace tasks -> "race:" + string (List.length tasks)
-    | NeedsTimerCancellation timers -> "cancel-timers:" + string (List.length timers)
-    | NeedsCurrentTime -> "current-time"
-    | NeedsLog message -> "log:" + message
+    | DurableAppNeed.Activity name -> "activity:" + name
+    | DurableAppNeed.Activities names -> "activities:" + string (List.length names)
+    | DurableAppNeed.Timer deadline -> "timer:" + string deadline
+    | DurableAppNeed.Signal name -> "signal:" + name
+    | DurableAppNeed.Race contenders -> "race:" + string (List.length contenders)
+    | DurableAppNeed.TimerCancellation count -> "cancel-timers:" + string count
+    | DurableAppNeed.CurrentTime -> "current-time"
+    | DurableAppNeed.Log message -> "log:" + message
 
 let statusText =
     function
-    | DurableClientStatusRead.Succeeded InstanceNotFound -> "not-found"
-    | DurableClientStatusRead.Succeeded(InstanceRunning workflow) -> "running:" + workflowText workflow
-    | DurableClientStatusRead.Succeeded(InstanceWaiting(workflow, _, need)) ->
-        "waiting:" + workflowText workflow + ":" + needText need
-    | DurableClientStatusRead.Succeeded(InstanceCompleted(workflow, payload)) ->
-        "completed:" + workflowText workflow + ":" + payload
-    | DurableClientStatusRead.Failed failure -> "failed:" + string failure
+    | DurableAppWorkflowStatus.NotFound -> "not-found"
+    | DurableAppWorkflowStatus.Running workflow -> "running:" + workflow
+    | DurableAppWorkflowStatus.Waiting(workflow, need) -> "waiting:" + workflow + ":" + needText need
+    | DurableAppWorkflowStatus.Completed(workflow, payload) -> "completed:" + workflow + ":" + payload
+    | DurableAppWorkflowStatus.Failed failure -> "failed:" + string failure
 
 let startInstance =
     function
-    | DurableClientStartStatus.Accepted ack -> ack.InstanceId
-    | DurableClientStartStatus.Failed failure -> failwith ("start failed: " + string failure)
+    | DurableAppStartResult.Started instanceId -> instanceId
+    | DurableAppStartResult.Rejected failure -> failwith ("start failed: " + string failure)
 
 module D = Eff.Foundation.Durable.App.Durable
 module T = Eff.Foundation.Durable.App.DurableTask

@@ -2,14 +2,14 @@
 
 This tutorial is the first copyable application surface for the durable app
 facade. It intentionally uses `Activity.define`, `Workflow.define`,
-`Signal.define`, `durableApp`, `DurableApp.clientWith`, and
-`DurableApp.workerWith` rather than raw registries or `DurableRuntime.create`.
+`Signal.define`, `durableApp`, `DurableApp.client`, and `DurableApp.worker`
+rather than raw registries or `DurableRuntime.create`.
 
 The script covers:
 
 - defining activities, workflows, and signals
 - assembling a durable app
-- constructing a client and worker from an S2 basin
+- constructing a client and worker from environment bootstrap settings
 - starting a workflow with a generated instance id
 - running the host until the instance is idle
 - reading durable status
@@ -25,7 +25,8 @@ EFF_FIREGRID_BASIN=test-basin-885234 \
   dotnet fable examples/durable-tutorial/src/Tutorial.fsx --outDir build_examples --runScript
 ```
 
-The basin must already exist. The script creates per-instance durable streams
+The basin must already exist. `EFF_FIREGRID_TUTORIAL_BASIN` can override the
+generic basin for this tutorial. The script creates per-instance durable streams
 and deletes them before exiting.
 
 ## Maintained By Check

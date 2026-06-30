@@ -13,7 +13,9 @@ module DurableAppFacadeProof =
           WorkerCompletesActivityWorkflow: bool
           ClientStatusReadsCompletion: bool
           ClientSignalCompletesWorkflow: bool
-          RaceWorkflowCompletesFromTypedSignal: bool }
+          RaceWorkflowCompletesFromTypedSignal: bool
+          CodecWorkflowCompletes: bool
+          CodecSignalCompletesWorkflow: bool }
 
     let private reserve =
         Activity.define "app-reserve" (fun orderId -> async { return "reserved:" + orderId })
@@ -22,6 +24,8 @@ module DurableAppFacadeProof =
         Activity.define "app-charge" (fun reservation -> async { return "charged:" + reservation })
 
     let private approved = Signal.define "app-approved"
+
+    let private scoreSignal = Signal.defineWith "app-score" string int
 
     let private checkout =
         Workflow.define "app-checkout" (fun orderId ->
@@ -51,13 +55,33 @@ module DurableAppFacadeProof =
                 | EventWon(_, Signal name, _) -> return "unexpected-signal:" + name
             })
 
+    let private addOne =
+        Activity.defineWith "app-add-one" string int string int (fun value -> async { return value + 1 })
+
+    let private typedMath =
+        Workflow.defineWith "app-typed-math" string int string int (fun value ->
+            durable {
+                let! incremented = D.call addOne value
+                return incremented + 10
+            })
+
+    let private typedSignal =
+        Workflow.define "app-typed-signal" (fun label ->
+            durable {
+                let! score = D.waitForSignal scoreSignal
+                return label + ":" + string (score + 1)
+            })
+
     let private app =
         durableApp {
             activity reserve
             activity charge
+            activity addOne
             workflow checkout
             workflow approval
             workflow approvalOrTimeout
+            workflow typedMath
+            workflow typedSignal
         }
 
     let private deleteInstance basin instanceId =
@@ -164,19 +188,46 @@ module DurableAppFacadeProof =
                            true
                        | _ -> false
 
+                let typedMathInstance = InstanceId.create ("app-typed-math-" + suffix)
+                let! _ = client.startWith typedMathInstance typedMath 31
+                let! typedMathTicks = worker.runUntilIdle typedMathInstance
+                let! typedMathStatus = client.status typedMathInstance
+
+                let codecWorkflowCompletes =
+                    match lastStatus typedMathTicks, typedMathStatus with
+                    | Some(DurableWorkflowHostStatus.Ticked(DurableHostTickStatus.Completed("42", _))),
+                      DurableAppWorkflowStatus.Completed("app-typed-math", "42") -> true
+                    | _ -> false
+
+                let typedSignalInstance = InstanceId.create ("app-typed-signal-" + suffix)
+                let! _ = client.startWith typedSignalInstance typedSignal "score"
+                let! _ = worker.runUntilIdle typedSignalInstance
+                let! typedSignalAck = client.signal typedSignalInstance scoreSignal 41
+                let! typedSignalTicks = worker.runUntilIdle typedSignalInstance
+
+                let codecSignalCompletesWorkflow =
+                    typedSignalAck = DurableAppSignalResult.Accepted
+                    && match lastStatus typedSignalTicks with
+                       | Some(DurableWorkflowHostStatus.Ticked(DurableHostTickStatus.Completed("score:42", _))) -> true
+                       | _ -> false
+
                 match checkoutInstance with
                 | Some instanceId -> do! deleteInstance basin instanceId
                 | None -> ()
 
                 do! deleteInstance basin approvalInstance
                 do! deleteInstance basin raceInstance
+                do! deleteInstance basin typedMathInstance
+                do! deleteInstance basin typedSignalInstance
 
                 let result =
                     { TypedStartReturnsInstance = typedStartReturnsInstance
                       WorkerCompletesActivityWorkflow = workerCompletesActivityWorkflow
                       ClientStatusReadsCompletion = clientStatusReadsCompletion
                       ClientSignalCompletesWorkflow = clientSignalCompletesWorkflow
-                      RaceWorkflowCompletesFromTypedSignal = raceWorkflowCompletesFromTypedSignal }
+                      RaceWorkflowCompletesFromTypedSignal = raceWorkflowCompletesFromTypedSignal
+                      CodecWorkflowCompletes = codecWorkflowCompletes
+                      CodecSignalCompletesWorkflow = codecSignalCompletesWorkflow }
 
                 do!
                     ctx.EmitSpan
@@ -186,7 +237,9 @@ module DurableAppFacadeProof =
                           "app.activity", string result.WorkerCompletesActivityWorkflow
                           "app.status", string result.ClientStatusReadsCompletion
                           "app.signal", string result.ClientSignalCompletesWorkflow
-                          "app.race", string result.RaceWorkflowCompletesFromTypedSignal ]
+                          "app.race", string result.RaceWorkflowCompletesFromTypedSignal
+                          "app.codec_workflow", string result.CodecWorkflowCompletes
+                          "app.codec_signal", string result.CodecSignalCompletesWorkflow ]
 
                 return result
             })
@@ -207,6 +260,10 @@ module DurableAppFacadeProof =
                       result.ClientSignalCompletesWorkflow)
                   v.Expect.Workload "typed signal can win a race workflow" (fun result ->
                       result.RaceWorkflowCompletesFromTypedSignal)
+                  v.Expect.Workload "codec-backed activity workflow completes" (fun result ->
+                      result.CodecWorkflowCompletes)
+                  v.Expect.Workload "codec-backed signal workflow completes" (fun result ->
+                      result.CodecSignalCompletesWorkflow)
                   v.Trace.SpanExists
                       "durable app facade proof span emitted"
                       "proof.durable_app_facade.completed"
@@ -218,7 +275,9 @@ module DurableAppFacadeProof =
                           OutputContains =
                               [ "TypedStartReturnsInstance"
                                 "WorkerCompletesActivityWorkflow"
-                                "RaceWorkflowCompletesFromTypedSignal" ]
+                                "RaceWorkflowCompletesFromTypedSignal"
+                                "CodecWorkflowCompletes"
+                                "CodecSignalCompletesWorkflow" ]
                           Count = Some 1 }) ])
         }
 

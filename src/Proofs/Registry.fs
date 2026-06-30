@@ -21,4 +21,5 @@ module Registry =
           DurableStatusProof.proof
           DurableRuntimeProof.proof
           DurableAppFacadeProof.proof
-          DurableTestHostProof.proof ]
+          DurableTestHostProof.proof
+          DurableEnvironmentBootstrapProof.proof ]

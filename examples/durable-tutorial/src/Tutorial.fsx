@@ -33,8 +33,18 @@ open Fable.Core
 [<Emit("Date.now()")>]
 let nowMillis () : int64 = jsNative
 
-[<Emit("process.env[$0] || $1")>]
-let envOr (_name: string) (_fallback: string) : string = jsNative
+[<Emit("process.env[$0] || ''")>]
+let env (_name: string) : string = jsNative
+
+let isBlank value = System.String.IsNullOrWhiteSpace value
+
+let requireEnv name =
+    let value = env name
+
+    if isBlank value then
+        failwith ("missing required environment variable: " + name)
+    else
+        value
 
 let instanceText (instanceId: InstanceId) = InstanceId.value instanceId
 
@@ -132,18 +142,30 @@ let deleteInstance basin instanceId =
 
 let tutorial =
     async {
-        let basinName = envOr "EFF_FIREGRID_BASIN" "test-basin-885234"
+        let environment = "tutorial"
+
+        let basinName =
+            let tutorialBasin = env "EFF_FIREGRID_TUTORIAL_BASIN"
+
+            if isBlank tutorialBasin then
+                requireEnv "EFF_FIREGRID_BASIN"
+            else
+                tutorialBasin
+
         let s2 = S2Cli.connect ()
         let basin = s2 |> S2.basin basinName
 
-        let storage = DurableStorage.s2 basin
-
-        let client = app |> DurableApp.clientWith { Storage = storage }
+        let client =
+            app
+            |> DurableApp.client
+                { Environment = environment
+                  BasinName = None }
 
         let worker =
             app
-            |> DurableApp.workerWith
-                { Storage = storage
+            |> DurableApp.worker
+                { Environment = environment
+                  BasinName = None
                   HostId = "tutorial"
                   MaxRunUntilIdleTicks = Some 10 }
 

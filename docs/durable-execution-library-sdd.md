@@ -381,13 +381,30 @@ Proof obligations:
 
 ### L5 Environment Bootstrap
 
-Add `DurableApp.client` and `DurableApp.worker` on top of explicit connection
-resolvers:
+Implemented: `DurableApp.client` and `DurableApp.worker` resolve storage from
+environment-specific S2 settings before returning app client and worker handles.
 
 ```fsharp
-let client = app |> DurableApp.client { Environment = "prod" }
-let worker = app |> DurableApp.worker { Environment = "prod"; HostId = "host-a" }
+let client =
+    app
+    |> DurableApp.client
+        { Environment = "prod"
+          BasinName = None }
+
+let worker =
+    app
+    |> DurableApp.worker
+        { Environment = "prod"
+          BasinName = None
+          HostId = "host-a"
+          MaxRunUntilIdleTicks = None }
 ```
+
+Resolution order is `EFF_FIREGRID_<ENV>_BASIN`, then `EFF_FIREGRID_BASIN`,
+unless `BasinName` is supplied. S2 access token and endpoint settings use the
+same environment-specific-then-global pattern for `ACCESS_TOKEN`,
+`S2_ACCOUNT_ENDPOINT`, and `S2_BASIN_ENDPOINT`; if none are supplied, the local
+S2 CLI config is used.
 
 Proof obligations:
 

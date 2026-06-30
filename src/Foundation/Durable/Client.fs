@@ -7,6 +7,7 @@ type DurableClientStartAck =
 type DurableClientSignalAck =
     { InstanceId: InstanceId
       InboxSeqNum: int64
+      Source: string
       SignalName: string
       SourceSeqNum: int64 }
 
@@ -73,9 +74,12 @@ module DurableClient =
                 return DurableClientStartStatus.Failed(DurableClientFailure.StartAppendFailed error.Message)
         }
 
-    let raiseSignalWith basin instanceId sourceSeqNum name payload =
+    let raiseSignalFrom basin instanceId source sourceSeqNum name payload =
         async {
             try
+                if System.String.IsNullOrWhiteSpace source then
+                    invalidArg (nameof source) "source must be non-empty"
+
                 if sourceSeqNum < 0L then
                     invalidArg (nameof sourceSeqNum) "sourceSeqNum must be non-negative"
 
@@ -86,7 +90,7 @@ module DurableClient =
                 let pair = S2Substrate.streams basin key
 
                 let envelope =
-                    { Source = signalSource
+                    { Source = source
                       SourceSeqNum = sourceSeqNum
                       Message = RaiseSignal(name, payload) }
 
@@ -100,11 +104,15 @@ module DurableClient =
                     DurableClientSignalStatus.Accepted
                         { InstanceId = instanceId
                           InboxSeqNum = ack.Start.SeqNum
+                          Source = source
                           SignalName = name
                           SourceSeqNum = sourceSeqNum }
             with error ->
                 return DurableClientSignalStatus.Failed(DurableClientFailure.SignalAppendFailed error.Message)
         }
+
+    let raiseSignalWith basin instanceId sourceSeqNum name payload =
+        raiseSignalFrom basin instanceId signalSource sourceSeqNum name payload
 
     let private decodeLog decoded =
         let rec loop records =

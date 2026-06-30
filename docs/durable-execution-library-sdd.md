@@ -178,6 +178,15 @@ module DurableClient =
         payload: Payload ->
         Async<DurableClientSignalStatus>
 
+    val raiseSignalFrom :
+        basin: S2.Basin ->
+        instanceId: InstanceId ->
+        source: string ->
+        sourceSeqNum: int64 ->
+        name: string ->
+        payload: Payload ->
+        Async<DurableClientSignalStatus>
+
     val getStatusWith :
         basin: S2.Basin ->
         workflows: WorkflowRegistry ->
@@ -185,9 +194,9 @@ module DurableClient =
         Async<DurableClientStatusRead>
 ```
 
-The final ergonomic `Start` / `RaiseSignal` wrapper can generate instance ids
-and source sequence numbers above this deterministic core. The final
-`GetStatus` wrapper can close over the runtime's registered workflows.
+The ergonomic runtime wrapper generates instance ids, isolates signal sources,
+allocates source sequence numbers, and closes `GetStatus` over the runtime's
+registered workflows above this deterministic core.
 
 ### Host API
 
@@ -215,21 +224,54 @@ local apps. `RunForever` is the later service loop.
 
 ### Runtime Assembly
 
+Implemented first facade:
+
+```fsharp
+let runtime =
+    DurableRuntime.create
+        (DurableRuntimeOptions.create "host-a")
+        basin
+        workflows
+        activities
+
+let! start = runtime.Client.Start (WorkflowName.create "checkout") "order-1"
+
+let! ticks =
+    match start with
+    | DurableClientStartStatus.Accepted ack -> runtime.Host.RunUntilIdle ack.InstanceId
+    | DurableClientStartStatus.Failed _ -> async { return [] }
+```
+
+`DurableRuntime.create` is intentionally a thin assembly layer. It generates
+instance ids, isolates runtime signal source ids, allocates monotonic signal
+source sequence numbers, closes `GetStatus` over the workflow registry, and
+exposes `Host.RunOnce` / bounded `Host.RunUntilIdle`. It does not add a daemon
+loop or a new persistence path.
+
 The runtime joins client, host, registries, and S2 configuration:
 
 ```fsharp
 type DurableRuntimeOptions =
-    { Basin: Eff.S2.Basin
-      HostId: string
+    { HostId: string
+      Timestamp: unit -> int64
+      MaxInboxRecords: int
+      MaxActivityCommands: int
+      MaxTimerCommands: int
+      MaxRunUntilIdleTicks: int }
+
+type DurableRuntime =
+    { Client: DurableRuntimeClient
+      Host: DurableRuntimeHost
       Workflows: WorkflowRegistry
       Activities: ActivityRegistry }
 
-type DurableRuntime =
-    { Client: DurableClient
-      Host: DurableHost }
-
 module DurableRuntime =
-    val create : DurableRuntimeOptions -> Async<DurableRuntime>
+    val create :
+        DurableRuntimeOptions ->
+        Eff.S2.Basin ->
+        WorkflowRegistry ->
+        ActivityRegistry ->
+        DurableRuntime
 ```
 
 This is the intended package entry point.
@@ -399,16 +441,15 @@ Proof obligations:
 - status for not found, running, waiting, completed, and missing workflow states
   is derived from durable records
 
-Still pending for the client surface:
-
-- generated instance ids
-- ergonomic source sequence generation for `RaiseSignal`
-- ergonomic runtime-bound `GetStatus`
+The remaining client work is API polish: naming, packaging, and examples that
+make the runtime facade the obvious entry point.
 
 ### L8 Ergonomic Host
 
-Expose `DurableRuntime.create`, `Host.RunOnce`, `Host.RunUntilIdle`, and then
-`Host.RunForever`.
+Implemented: expose `DurableRuntime.create`, `Client.Start`,
+`Client.StartWith`, `Client.RaiseSignal`, `Client.RaiseSignalWith`,
+`Client.GetStatus`, `Host.RunOnce`, and bounded `Host.RunUntilIdle`.
+`Host.RunForever` remains the later service loop.
 
 Proof obligations:
 
@@ -416,6 +457,8 @@ Proof obligations:
 - host restart does not duplicate committed commands
 - deposed hosts stop publishing progress
 - failures are typed and observable
+- generated client starts return usable instance ids
+- runtime signal admission uses an isolated monotonic source
 
 ## First Example Target
 

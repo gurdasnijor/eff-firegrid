@@ -18,4 +18,5 @@ module Registry =
           DurableTimerAdapterProof.proof
           DurableClientAdmissionProof.proof
           DurableSignalAdmissionProof.proof
-          DurableStatusProof.proof ]
+          DurableStatusProof.proof
+          DurableRuntimeProof.proof ]

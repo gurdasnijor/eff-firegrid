@@ -71,6 +71,9 @@ let reserve =
 let charge =
     Activity.define "charge" (fun reservation -> async { return "charged:" + reservation })
 
+let addOne =
+    Activity.defineWith "add-one" string int string int (fun value -> async { return value + 1 })
+
 let approved = Signal.define "approved"
 
 let checkout =
@@ -102,13 +105,22 @@ let approvalOrTimeout =
             | EventWon(_, Signal name, _) -> return "unexpected-signal:" + name
         })
 
+let typedMath =
+    Workflow.defineWith "typed-math" string int string int (fun value ->
+        durable {
+            let! incremented = D.call addOne value
+            return incremented + 10
+        })
+
 let app =
     durableApp {
         activity reserve
         activity charge
+        activity addOne
         workflow checkout
         workflow approval
         workflow approvalOrTimeout
+        workflow typedMath
     }
 
 let deleteInstance basin instanceId =
@@ -168,6 +180,14 @@ let tutorial =
         let! timeoutStatus = client.status timeoutId
         printfn "timeout status: %s" (statusText timeoutStatus)
 
+        let typedMathId = InstanceId.create ("typed-math-" + string (nowMillis ()))
+        let! _ = client.startWith typedMathId typedMath 31
+        let! _ = worker.runUntilIdle typedMathId
+
+        let! typedMathStatus = client.status typedMathId
+        printfn "typed math status: %s" (statusText typedMathStatus)
+
+        do! deleteInstance basin typedMathId
         do! deleteInstance basin timeoutId
         do! deleteInstance basin approvalId
         do! deleteInstance basin checkoutId

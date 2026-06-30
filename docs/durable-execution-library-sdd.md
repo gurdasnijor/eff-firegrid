@@ -116,9 +116,9 @@ first so storage wiring remains testable while the app API settles.
 
 ## Public API
 
-The first facade is string-payload only. The handle records already carry
-internal codecs so typed payloads can be layered without changing the durable
-log, host, or client invariants.
+The durable log stores string payloads. Public handles can stay string-only or
+carry explicit codecs so user code can work with typed inputs, outputs, and
+signals without changing substrate records.
 
 ```fsharp
 module Activity =
@@ -127,18 +127,42 @@ module Activity =
         handler: (string -> Async<string>) ->
         Activity<string, string>
 
+    val defineWith :
+        name: string ->
+        encodeInput: ('input -> string) ->
+        decodeInput: (string -> 'input) ->
+        encodeOutput: ('output -> string) ->
+        decodeOutput: (string -> 'output) ->
+        handler: ('input -> Async<'output>) ->
+        Activity<'input, 'output>
+
 module Workflow =
     val define :
         name: string ->
         factory: (string -> Durable<string>) ->
         Workflow<string, string>
 
+    val defineWith :
+        name: string ->
+        encodeInput: ('input -> string) ->
+        decodeInput: (string -> 'input) ->
+        encodeOutput: ('output -> string) ->
+        decodeOutput: (string -> 'output) ->
+        factory: ('input -> Durable<'output>) ->
+        Workflow<'input, 'output>
+
 module Signal =
     val define : name: string -> Signal<string>
 
+    val defineWith :
+        name: string ->
+        encode: ('payload -> string) ->
+        decode: (string -> 'payload) ->
+        Signal<'payload>
+
 module Durable =
-    val call : Activity<string, string> -> string -> Durable<string>
-    val waitForSignal : Signal<string> -> Durable<string>
+    val call : Activity<'input, 'output> -> 'input -> Durable<'output>
+    val waitForSignal : Signal<'payload> -> Durable<'payload>
     val sleepUntil : deadline: int64 -> Durable<unit>
     val any : RaceTask seq -> Durable<RaceResult>
     val currentTime : Durable<int64>
@@ -160,10 +184,10 @@ type DurableAppWorkflowStatus =
     | Failed of DurableAppStatusFailure
 
 type DurableAppClient =
-    { start : Workflow<string, string> -> string -> Async<DurableAppStartResult>
-      startWith : InstanceId -> Workflow<string, string> -> string -> Async<DurableAppStartResult>
-      signal : InstanceId -> Signal<string> -> string -> Async<DurableAppSignalResult>
-      status : InstanceId -> Async<DurableAppWorkflowStatus> }
+    member start : Workflow<'input, 'output> -> 'input -> Async<DurableAppStartResult>
+    member startWith : InstanceId -> Workflow<'input, 'output> -> 'input -> Async<DurableAppStartResult>
+    member signal : InstanceId -> Signal<'payload> -> 'payload -> Async<DurableAppSignalResult>
+    member status : InstanceId -> Async<DurableAppWorkflowStatus>
 
 type DurableAppWorker =
     { runOnce : InstanceId -> Async<DurableWorkflowHostStatus>
@@ -217,6 +241,8 @@ Implemented and proof-backed today:
   `DurableApp.workerWith`.
 - App client calls project lower client outcomes into `DurableAppStartResult`,
   `DurableAppSignalResult`, and `DurableAppWorkflowStatus`.
+- `Activity.defineWith`, `Workflow.defineWith`, and `Signal.defineWith` attach
+  explicit codecs to handles while keeping durable storage as string payloads.
 - The compiled proof runner validates the above against pure laws and ephemeral
   S2 streams.
 
@@ -297,22 +323,39 @@ Proof obligations:
 
 ### L3 Typed Payload Codecs
 
-Add explicit codecs without changing substrate records:
+Implemented: typed handles attach explicit codecs without changing substrate
+records:
 
 ```fsharp
-let reserve =
+let addOne =
     Activity.defineWith
-        "reserve"
-        Json.encode<Order>
-        Json.decode<Order>
-        Json.encode<Reservation>
-        Json.decode<Reservation>
-        reserveHandler
+        "add-one"
+        string
+        int
+        string
+        int
+        (fun value -> async { return value + 1 })
+
+let typedMath =
+    Workflow.defineWith
+        "typed-math"
+        string
+        int
+        string
+        int
+        (fun value ->
+            durable {
+                let! incremented = Durable.call addOne value
+                return incremented + 10
+            })
+
+let score = Signal.defineWith "score" string int
 ```
 
 Proof obligations:
 
-- encode/decode failures are typed and do not corrupt durable history
+- codec-backed activity workflows complete through the durable worker
+- codec-backed signal payloads complete waiting workflows
 - replay sees stable payload text for a given codec version
 - typed activity and workflow handles cannot be crossed accidentally
 

@@ -12,6 +12,7 @@ type InboxMessage =
     | StartWorkflow of WorkflowName * Payload
     | RaiseSignal of name: string * payload: Payload
     | CompleteActivity of OpId * Payload
+    | FireTimer of OpId * deadline: int64
 
 type InboxEnvelope =
     { Source: string

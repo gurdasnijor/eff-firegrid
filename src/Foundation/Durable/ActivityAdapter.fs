@@ -88,7 +88,8 @@ module ActivityCommandAdapter =
                                             state |> Set.add envelope.SourceSeqNum
                                         | StartWorkflow _
                                         | RaiseSignal _
-                                        | CompleteActivity _ -> state
+                                        | CompleteActivity _
+                                        | FireTimer _ -> state
 
                                     decodeRecords (record.SeqNum + 1L) state rest
                                 | Error error ->

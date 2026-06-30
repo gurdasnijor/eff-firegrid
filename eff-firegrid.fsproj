@@ -28,6 +28,7 @@
     <Compile Include="src/Foundation/Durable/CommandDispatch.fs" />
     <Compile Include="src/Foundation/Durable/ActivityAdapter.fs" />
     <Compile Include="src/Foundation/Durable/InboxFold.fs" />
+    <Compile Include="src/Foundation/Durable/TimerAdapter.fs" />
     <Compile Include="src/Foundation/Durable/Host.fs" />
     <Compile Include="src/Proofs/Proof.fs" />
     <Compile Include="src/Proofs/Reports.fs" />
@@ -55,6 +56,7 @@
     <Compile Include="src/Proofs/DurableInboxFoldProof.fs" />
     <Compile Include="src/Proofs/DurableActivityInboxProof.fs" />
     <Compile Include="src/Proofs/DurableHostTickProof.fs" />
+    <Compile Include="src/Proofs/DurableTimerAdapterProof.fs" />
     <Compile Include="src/Proofs/Registry.fs" />
     <Compile Include="src/Program.fs" />
   </ItemGroup>

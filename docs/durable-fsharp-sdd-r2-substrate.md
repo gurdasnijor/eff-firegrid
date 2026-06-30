@@ -121,12 +121,22 @@ Implemented slices:
   covers claimed-owner reporting, repeated ticks completing a two-activity
   workflow, retry after step-commit-before-dispatch, typed missing-handler
   failure, and stale-owner rejection.
+- **Tier 2.9 timer command adapter.**
+  `TimerCommandAdapter.runOnce` consumes committed `ScheduleTimer` /
+  `CancelTimer` commands on a dispatcher-scoped timer cursor, publishes due
+  `FireTimer` inbox envelopes, and intentionally does not checkpoint past
+  future timers. `InboxFold.runOnce` converts accepted `FireTimer` arrivals into
+  `TimerFired` history, so `Workflow.sleepUntil` progresses through the same
+  inbox/fold path as activity completions. The compiled proof covers no fire
+  before deadline, fire at deadline through inbox, cancellation suppression,
+  publish-before-checkpoint retry deduplication, and host-tick advancement of
+  `sleepUntil`.
 
 Next slices, still one layer + proof at a time:
 
-- implement the timer adapter for committed `ScheduleTimer` / `CancelTimer`
-  commands, publishing timer firings through the same inbox/fold path with
-  proof for deadline, cancellation, retry, and replay behavior.
+- implement durable client admission for `StartWorkflow` and `RaiseSignal`
+  inbox envelopes, with idempotent start semantics and signal delivery through
+  the composed host tick.
 
 One surprising constraint surfaced from your own code — see §1.
 

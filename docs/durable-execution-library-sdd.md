@@ -77,6 +77,9 @@ Implemented and proof-backed today:
 - `DurableHost.runOwnedTick` / `claimAndRunTick` compose one host operation:
   fold inbox, step workflow replay, and dispatch committed activity/timer
   commands.
+- `DurableClient.startWith` admits `StartWorkflow` through `{instance}/in`, and
+  `DurableHost.runWorkflowTick` folds that start into `WorkflowStarted` before
+  selecting a registered workflow.
 - The compiled proof runner validates the above against pure laws and ephemeral
   S2 streams.
 
@@ -341,16 +344,27 @@ Proof obligations:
 - timer outcomes replay deterministically from history
 - composed host ticks advance `Workflow.sleepUntil`
 
-### L7 Durable Client
+### L7 Durable Client Start Admission
 
-Expose `Start`, `RaiseSignal`, and `GetStatus`.
+Implemented: expose `DurableClient.startWith` as the first durable client
+admission call and `DurableHost.runWorkflowTick` as the registry-backed host
+entry for started instances. A start writes a `StartWorkflow` envelope to
+`{instance}/in`; inbox fold records `WorkflowStarted`; the host selects the
+registered workflow factory from that durable record.
 
 Proof obligations:
 
 - start admission is retry-safe for a supplied `InstanceId`
-- generated instance ids are unique enough for the target runtime model
-- raise-signal admission is durable before acknowledgement
-- status is derived from durable history, not volatile host state
+- duplicate `StartWith` attempts fold into one effective workflow start
+- the host starts the registered workflow from the folded start record
+- missing workflows surface as typed failures
+- empty instances report no durable start
+
+Still pending for the client surface:
+
+- generated instance ids
+- `RaiseSignal`
+- `GetStatus`
 
 ### L8 Ergonomic Host
 

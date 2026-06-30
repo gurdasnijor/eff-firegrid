@@ -25,6 +25,7 @@
     <Compile Include="src/Foundation/Durable/S2Substrate.fs" />
     <Compile Include="src/Foundation/Durable/Stepper.fs" />
     <Compile Include="src/Foundation/Durable/StepRecordCodec.fs" />
+    <Compile Include="src/Foundation/Durable/Client.fs" />
     <Compile Include="src/Foundation/Durable/CommandDispatch.fs" />
     <Compile Include="src/Foundation/Durable/ActivityAdapter.fs" />
     <Compile Include="src/Foundation/Durable/InboxFold.fs" />
@@ -57,6 +58,7 @@
     <Compile Include="src/Proofs/DurableActivityInboxProof.fs" />
     <Compile Include="src/Proofs/DurableHostTickProof.fs" />
     <Compile Include="src/Proofs/DurableTimerAdapterProof.fs" />
+    <Compile Include="src/Proofs/DurableClientAdmissionProof.fs" />
     <Compile Include="src/Proofs/Registry.fs" />
     <Compile Include="src/Program.fs" />
   </ItemGroup>

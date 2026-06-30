@@ -198,6 +198,7 @@ module StepRecordCodec =
 
     let private encodeStepRecord =
         function
+        | WorkflowStarted(name, input) -> prefixed "workflow.started" (fields [ workflowNameText name; input ])
         | HistoryEvent event -> eventPrefix event
         | Command command -> commandPrefix command
         | CommandDispatchCheckpoint(dispatcher, nextSeqNum) ->
@@ -334,6 +335,11 @@ module StepRecordCodec =
             decodeEvent prefix text start |> Result.map HistoryEvent
         | Ok(prefix, _, start) when prefix.StartsWith("command.", StringComparison.Ordinal) ->
             decodeCommand prefix text start |> Result.map Command
+        | Ok(prefix, _, start) when prefix = "workflow.started" ->
+            readFields 2 text start
+            |> Result.bind (function
+                | [ name; input ] -> Ok(WorkflowStarted(WorkflowName name, input))
+                | _ -> Error "bad workflow started field count")
         | Ok(prefix, _, start) when prefix = "dispatch.checkpoint" ->
             readFields 2 text start
             |> Result.bind (function

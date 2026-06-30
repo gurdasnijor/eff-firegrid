@@ -141,7 +141,8 @@ module DurableStepperProof =
 
     let private checkStepRecordCodecRoundTrips () =
         let records =
-            [ Incoming(
+            [ Incoming(WorkflowStarted(WorkflowName "checkout|flow", "input:body"))
+              Incoming(
                   HistoryEvent(
                       ActivityCalled(
                           OpId 7,

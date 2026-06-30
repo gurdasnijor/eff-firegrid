@@ -100,6 +100,13 @@ module InboxFold =
 
         let eventRecords = events |> List.map (HistoryEvent >> Incoming)
 
+        let startRecords =
+            match envelope.Message with
+            | StartWorkflow(name, input) -> [ Incoming(WorkflowStarted(name, input)) ]
+            | RaiseSignal _
+            | CompleteActivity _
+            | FireTimer _ -> []
+
         let accepted =
             { InboxSeqNum = inboxSeqNum
               Envelope = envelope
@@ -107,6 +114,7 @@ module InboxFold =
 
         accepted,
         [ yield Incoming(InboxMessageAccepted envelope)
+          yield! startRecords
           yield! eventRecords
           yield Incoming(InboxSourceHighwater(envelope.Source, envelope.SourceSeqNum + 1L)) ]
 

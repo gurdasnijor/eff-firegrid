@@ -131,12 +131,23 @@ Implemented slices:
   before deadline, fire at deadline through inbox, cancellation suppression,
   publish-before-checkpoint retry deduplication, and host-tick advancement of
   `sleepUntil`.
+- **Tier 2.10 client start admission.**
+  `DurableClient.startWith` is now the first client-facing admission path. It
+  ensures the instance streams, appends a `StartWorkflow` envelope to
+  `{instance}/in`, and returns after durable inbox acknowledgement.
+  `InboxFold.runOnce` records accepted starts as `WorkflowStarted`, and
+  `DurableHost.runWorkflowTick` uses the folded start record to select the
+  registered workflow factory before running the composed host tick. The
+  compiled proof covers durable start acknowledgement before host execution,
+  duplicate `StartWith` folding to one effective start, registered-workflow
+  execution, activity completion after start admission, typed missing-workflow
+  failure, and no-start detection.
 
 Next slices, still one layer + proof at a time:
 
-- implement durable client admission for `StartWorkflow` and `RaiseSignal`
-  inbox envelopes, with idempotent start semantics and signal delivery through
-  the composed host tick.
+- implement `RaiseSignal` admission and signal delivery through the composed
+  host tick, then derive `GetStatus` from durable history rather than volatile
+  host state.
 
 One surprising constraint surfaced from your own code — see §1.
 

@@ -6,6 +6,9 @@ type ActivityName = ActivityName of string
 [<Struct>]
 type WorkflowName = WorkflowName of string
 
+[<Struct>]
+type InstanceId = InstanceId of string
+
 type Payload = Value
 
 type ActivityHandler = Payload -> Async<Payload>
@@ -34,6 +37,12 @@ module WorkflowName =
     let create name = WorkflowName name
 
     let value (WorkflowName name) = name
+
+[<RequireQualifiedAccess>]
+module InstanceId =
+    let create value = InstanceId value
+
+    let value (InstanceId value) = value
 
 [<RequireQualifiedAccess>]
 module ActivityRegistry =

@@ -24,4 +24,5 @@ module Registry =
           DurableTestHostProof.proof
           DurableEnvironmentBootstrapProof.proof
           DurableWorkerLoopProof.proof
-          DurableTypedStatusProof.proof ]
+          DurableTypedStatusProof.proof
+          DurableRaceFacadeProof.proof ]

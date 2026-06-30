@@ -23,6 +23,7 @@ type StepRecord =
     | WorkflowStarted of WorkflowName * Payload
     | HistoryEvent of Event
     | Command of StepCommand
+    | SignalDelivered of source: string * sourceSeqNum: int64 * opId: OpId
     | CommandDispatchCheckpoint of dispatcher: string * nextSeqNum: int64
     | InboxCheckpoint of nextSeqNum: int64
     | InboxSourceHighwater of source: string * nextSeqNum: int64

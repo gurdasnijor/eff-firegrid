@@ -30,13 +30,28 @@ type DurableHostTickReport<'a> =
       Fence: FenceToken
       Inbox: InboxFoldReport option
       Step: DurableHostStatus<'a> option
+      Signals: SignalDeliveryReport option
       Activities: ActivityCommandAdapterReport option
       Timers: TimerCommandAdapterReport option }
+
+and SignalDelivery =
+    { Source: string
+      SourceSeqNum: int64
+      OpId: OpId
+      Name: string
+      Payload: Payload
+      Commit: S2.AppendAck }
+
+and SignalDeliveryReport =
+    { Delivered: SignalDelivery option
+      PendingSignals: int
+      AlreadyDelivered: int }
 
 [<RequireQualifiedAccess>]
 type DurableHostTickFailure =
     | InboxFailed of InboxFoldFailure
     | StepFailed of DurableHostFailure
+    | SignalFailed of DurableHostFailure
     | ActivityFailed of ActivityCommandAdapterFailure
     | TimerFailed of TimerCommandAdapterFailure
 
@@ -78,6 +93,7 @@ module DurableHost =
           Fence = owned.Fence
           Inbox = None
           Step = None
+          Signals = None
           Activities = None
           Timers = None }
 
@@ -132,12 +148,12 @@ module DurableHost =
     let runOnce encode decode timestamp owned program =
         stepOnce encode decode timestamp owned program
 
-    let private inboxMadeProgress report =
+    let private inboxMadeProgress (report: InboxFoldReport) =
         match report.Commit with
         | Some _ -> true
         | None -> false
 
-    let private activitiesMadeProgress report =
+    let private activitiesMadeProgress (report: ActivityCommandAdapterReport) =
         not (List.isEmpty report.Completed)
         || report.AlreadyPublished > 0
         || report.Ignored > 0
@@ -147,7 +163,7 @@ module DurableHost =
            | CommandDispatchCheckpointResult.Deposed _
            | CommandDispatchCheckpointResult.Failed _ -> false
 
-    let private timersMadeProgress report =
+    let private timersMadeProgress (report: TimerCommandAdapterReport) =
         not (List.isEmpty report.Published)
         || report.AlreadyPublished > 0
         || report.Canceled > 0
@@ -157,6 +173,162 @@ module DurableHost =
            | CommandDispatchCheckpointResult.NotRequired
            | CommandDispatchCheckpointResult.Deposed _
            | CommandDispatchCheckpointResult.Failed _ -> false
+
+    [<RequireQualifiedAccess>]
+    type private SignalDeliveryStatus =
+        | Delivered of SignalDeliveryReport
+        | NotAvailable of SignalDeliveryReport
+        | Deposed of expectedFence: string * SignalDeliveryReport
+        | Failed of DurableHostFailure * SignalDeliveryReport
+
+    let private signalNeeds =
+        function
+        | DurableHostStatus.Waiting(opId, NeedsEvent(Signal name)) -> [ opId, name ]
+        | DurableHostStatus.Waiting(_, NeedsRace pending) ->
+            pending
+            |> List.choose (function
+                | opId, RaceEvent(Signal name) -> Some(opId, name)
+                | _ -> None)
+        | _ -> []
+
+    let private deliveredSignals records =
+        records
+        |> List.choose (function
+            | Incoming(SignalDelivered(source, sourceSeqNum, _)) -> Some(source, sourceSeqNum)
+            | _ -> None)
+        |> Set.ofList
+
+    let private acceptedSignals records =
+        records
+        |> List.choose (function
+            | Incoming(InboxMessageAccepted envelope) ->
+                match envelope.Message with
+                | RaiseSignal(name, payload) -> Some(envelope.Source, envelope.SourceSeqNum, name, payload)
+                | StartWorkflow _
+                | CompleteActivity _
+                | FireTimer _ -> None
+            | _ -> None)
+
+    let private tryDeliverSignal owned step =
+        async {
+            let needs = signalNeeds step
+
+            let emptyReport =
+                { Delivered = None
+                  PendingSignals = 0
+                  AlreadyDelivered = 0 }
+
+            if List.isEmpty needs then
+                return SignalDeliveryStatus.NotAvailable emptyReport
+            else
+                let! log = readLog StepRecordCodec.decode owned
+
+                match log with
+                | Error failure -> return SignalDeliveryStatus.Failed(failure, emptyReport)
+                | Ok decoded ->
+                    match decodeLog decoded with
+                    | Error failure -> return SignalDeliveryStatus.Failed(failure, emptyReport)
+                    | Ok records ->
+                        let delivered = deliveredSignals records
+                        let allAccepted = acceptedSignals records
+
+                        let pending =
+                            allAccepted
+                            |> List.filter (fun (source, sourceSeqNum, _, _) ->
+                                not (delivered |> Set.contains (source, sourceSeqNum)))
+
+                        let alreadyDelivered = List.length allAccepted - List.length pending
+
+                        let baseReport =
+                            { Delivered = None
+                              PendingSignals = List.length pending
+                              AlreadyDelivered = alreadyDelivered }
+
+                        let delivery =
+                            pending
+                            |> List.tryPick (fun (source, sourceSeqNum, name, payload) ->
+                                needs
+                                |> List.tryFind (fun (_, neededName) -> neededName = name)
+                                |> Option.map (fun (opId, _) -> source, sourceSeqNum, opId, name, payload))
+
+                        match delivery with
+                        | None -> return SignalDeliveryStatus.NotAvailable baseReport
+                        | Some(source, sourceSeqNum, opId, name, payload) ->
+                            let records =
+                                [ Incoming(HistoryEvent(SignalReceived(opId, name, payload)))
+                                  Incoming(SignalDelivered(source, sourceSeqNum, opId)) ]
+
+                            let! commit = S2Substrate.commitText StepRecordCodec.encode records owned
+
+                            match commit with
+                            | Committed ack ->
+                                let deliveredSignal =
+                                    { Source = source
+                                      SourceSeqNum = sourceSeqNum
+                                      OpId = opId
+                                      Name = name
+                                      Payload = payload
+                                      Commit = ack }
+
+                                return
+                                    SignalDeliveryStatus.Delivered
+                                        { baseReport with
+                                            Delivered = Some deliveredSignal }
+                            | Deposed expected -> return SignalDeliveryStatus.Deposed(expected, baseReport)
+                            | CommitFailed failure ->
+                                return SignalDeliveryStatus.Failed(DurableHostFailure.CommitFailed failure, baseReport)
+        }
+
+    let private runAdapters
+        (options: DurableHostTickOptions)
+        (activities: ActivityRegistry)
+        (owned: OwnedKey)
+        (inboxReport: InboxFoldReport)
+        (step: DurableHostStatus<'a>)
+        (reportAfterStep: DurableHostTickReport<'a>)
+        =
+        async {
+            let! activity =
+                ActivityCommandAdapter.runOnce
+                    StepRecordCodec.encode
+                    StepRecordCodec.decode
+                    options.MaxActivityCommands
+                    activities
+                    owned
+
+            match activity with
+            | ActivityCommandAdapterStatus.Deposed expected ->
+                return DurableHostTickStatus.Deposed(expected, reportAfterStep)
+            | ActivityCommandAdapterStatus.Failed failure ->
+                return DurableHostTickStatus.Failed(DurableHostTickFailure.ActivityFailed failure, reportAfterStep)
+            | ActivityCommandAdapterStatus.Processed activityReport ->
+                let reportAfterActivities =
+                    { reportAfterStep with
+                        Activities = Some activityReport }
+
+                let! timer =
+                    TimerCommandAdapter.runOnce StepRecordCodec.decode options.Timestamp options.MaxTimerCommands owned
+
+                match timer with
+                | TimerCommandAdapterStatus.Deposed expected ->
+                    return DurableHostTickStatus.Deposed(expected, reportAfterActivities)
+                | TimerCommandAdapterStatus.Failed failure ->
+                    return
+                        DurableHostTickStatus.Failed(DurableHostTickFailure.TimerFailed failure, reportAfterActivities)
+                | TimerCommandAdapterStatus.Processed timerReport ->
+                    let report =
+                        { reportAfterActivities with
+                            Timers = Some timerReport }
+
+                    match step with
+                    | DurableHostStatus.Waiting(opId, need) when
+                        not (inboxMadeProgress inboxReport)
+                        && not (activitiesMadeProgress activityReport)
+                        && not (timersMadeProgress timerReport)
+                        ->
+                        return DurableHostTickStatus.Waiting(opId, need, report)
+                    | _ -> return DurableHostTickStatus.Advanced report
+        }
 
     let runOwnedTick options activities (owned: OwnedKey) program =
         async {
@@ -190,56 +362,41 @@ module DurableHost =
                 | DurableHostStatus.Failed failure ->
                     return DurableHostTickStatus.Failed(DurableHostTickFailure.StepFailed failure, reportAfterStep)
                 | DurableHostStatus.Completed value -> return DurableHostTickStatus.Completed(value, reportAfterStep)
-                | DurableHostStatus.Committed _
+                | DurableHostStatus.Committed _ ->
+                    return! runAdapters options activities owned inboxReport step reportAfterStep
                 | DurableHostStatus.Waiting _ ->
-                    let! activity =
-                        ActivityCommandAdapter.runOnce
-                            StepRecordCodec.encode
-                            StepRecordCodec.decode
-                            options.MaxActivityCommands
-                            activities
-                            owned
+                    let! signal = tryDeliverSignal owned step
 
-                    match activity with
-                    | ActivityCommandAdapterStatus.Deposed expected ->
-                        return DurableHostTickStatus.Deposed(expected, reportAfterStep)
-                    | ActivityCommandAdapterStatus.Failed failure ->
+                    match signal with
+                    | SignalDeliveryStatus.Delivered signalReport ->
                         return
-                            DurableHostTickStatus.Failed(DurableHostTickFailure.ActivityFailed failure, reportAfterStep)
-                    | ActivityCommandAdapterStatus.Processed activityReport ->
-                        let reportAfterActivities =
-                            { reportAfterStep with
-                                Activities = Some activityReport }
-
-                        let! timer =
-                            TimerCommandAdapter.runOnce
-                                StepRecordCodec.decode
-                                options.Timestamp
-                                options.MaxTimerCommands
+                            DurableHostTickStatus.Advanced
+                                { reportAfterStep with
+                                    Signals = Some signalReport }
+                    | SignalDeliveryStatus.NotAvailable signalReport ->
+                        return!
+                            runAdapters
+                                options
+                                activities
                                 owned
-
-                        match timer with
-                        | TimerCommandAdapterStatus.Deposed expected ->
-                            return DurableHostTickStatus.Deposed(expected, reportAfterActivities)
-                        | TimerCommandAdapterStatus.Failed failure ->
-                            return
-                                DurableHostTickStatus.Failed(
-                                    DurableHostTickFailure.TimerFailed failure,
-                                    reportAfterActivities
-                                )
-                        | TimerCommandAdapterStatus.Processed timerReport ->
-                            let report =
-                                { reportAfterActivities with
-                                    Timers = Some timerReport }
-
-                            match step with
-                            | DurableHostStatus.Waiting(opId, need) when
-                                not (inboxMadeProgress inboxReport)
-                                && not (activitiesMadeProgress activityReport)
-                                && not (timersMadeProgress timerReport)
-                                ->
-                                return DurableHostTickStatus.Waiting(opId, need, report)
-                            | _ -> return DurableHostTickStatus.Advanced report
+                                inboxReport
+                                step
+                                { reportAfterStep with
+                                    Signals = Some signalReport }
+                    | SignalDeliveryStatus.Deposed(expected, signalReport) ->
+                        return
+                            DurableHostTickStatus.Deposed(
+                                expected,
+                                { reportAfterStep with
+                                    Signals = Some signalReport }
+                            )
+                    | SignalDeliveryStatus.Failed(failure, signalReport) ->
+                        return
+                            DurableHostTickStatus.Failed(
+                                DurableHostTickFailure.SignalFailed failure,
+                                { reportAfterStep with
+                                    Signals = Some signalReport }
+                            )
         }
 
     let claimAndRunTick options activities pair program =

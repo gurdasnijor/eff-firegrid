@@ -16,4 +16,5 @@ module Registry =
           DurableActivityInboxProof.proof
           DurableHostTickProof.proof
           DurableTimerAdapterProof.proof
-          DurableClientAdmissionProof.proof ]
+          DurableClientAdmissionProof.proof
+          DurableSignalAdmissionProof.proof ]

@@ -51,6 +51,7 @@ module Program =
           "build"
           "build_test"
           "build_bench"
+          "build_examples"
           "build_proofs"
           "build_script"
           "build_scripts"
@@ -106,10 +107,19 @@ module Program =
         run "dotnet" [ "build"; "eff-firegrid.fsproj"; "-clp:ErrorsOnly" ]
 
     let format () =
-        run "dotnet" [ "fantomas"; "src"; "tests"; "benchmarks"; "scripts"; "repl.fsx" ]
+        run "dotnet" [ "fantomas"; "src"; "tests"; "benchmarks"; "scripts"; "examples"; "repl.fsx" ]
 
     let formatCheck () =
-        run "dotnet" [ "fantomas"; "--check"; "src"; "tests"; "benchmarks"; "scripts"; "repl.fsx" ]
+        run
+            "dotnet"
+            [ "fantomas"
+              "--check"
+              "src"
+              "tests"
+              "benchmarks"
+              "scripts"
+              "examples"
+              "repl.fsx" ]
 
     let lint () =
         run
@@ -122,6 +132,15 @@ module Program =
 
     let fableSmoke () =
         run "dotnet" [ "fable"; "repl.fsx"; "--outDir"; "build"; "--noCache" ]
+
+    let examplesSmoke () =
+        run
+            "dotnet"
+            [ "fable"
+              "examples/durable-tutorial/src/Tutorial.fsx"
+              "--outDir"
+              "build_examples"
+              "--noCache" ]
 
     let play () =
         run "dotnet" [ "fable"; "repl.fsx"; "--outDir"; "build"; "--runScript" ]
@@ -152,6 +171,7 @@ module Program =
         build ()
         lint ()
         fableSmoke ()
+        examplesSmoke ()
         test ()
         proofs None
 
@@ -177,6 +197,7 @@ module Program =
         Target.create "FormatCheck" (fun _ -> formatCheck ())
         Target.create "Lint" (fun _ -> lint ())
         Target.create "FableSmoke" (fun _ -> fableSmoke ())
+        Target.create "ExamplesSmoke" (fun _ -> examplesSmoke ())
         Target.create "Play" (fun _ -> play ())
         Target.create "Proofs" (fun _ -> proofs proof)
         Target.create "Test" (fun _ -> test ())
@@ -190,6 +211,7 @@ module Program =
         "RestoreTools" ==> "FormatCheck" |> ignore
         "RestoreTools" ==> "Lint" |> ignore
         "RestoreTools" ==> "FableSmoke" |> ignore
+        "RestoreTools" ==> "ExamplesSmoke" |> ignore
         "RestoreTools" ==> "Play" |> ignore
         "RestoreTools" ==> "Proofs" |> ignore
         "RestoreTools" ==> "Test" |> ignore

@@ -157,12 +157,22 @@ Implemented slices:
   `RaiseSignalWith` folding to one accepted signal, host advancement on
   delivery, completion from the delivered payload, and exactly-once signal
   consumption by source sequence.
+- **Tier 2.12 durable status query.**
+  `DurableClient.getStatusWith` is the first client observation path. It reads
+  the folded durable log for an instance, finds `WorkflowStarted`, resolves the
+  registered workflow factory, rebuilds history, and replays without committing
+  new records. The result is `InstanceNotFound`, `InstanceRunning`,
+  `InstanceWaiting`, or `InstanceCompleted`, with typed failure when the folded
+  workflow name is not registered. The status is therefore derived from durable
+  history, not a host process cache. The compiled proof covers empty instances,
+  folded starts that still need a host step, waiting status from replay,
+  completed status from signal-delivered history, and missing workflow failure.
 
 Next slices, still one layer + proof at a time:
 
-- derive `GetStatus` from durable history rather than volatile host state, then
-  add generated instance ids and the higher-level ergonomic client wrapper over
-  `startWith` / `raiseSignalWith`.
+- add generated instance ids, ergonomic source sequence generation for
+  `RaiseSignal`, and the higher-level `DurableRuntime.create` wrapper over
+  `startWith` / `raiseSignalWith` / `getStatusWith`.
 
 One surprising constraint surfaced from your own code — see §1.
 

@@ -60,6 +60,7 @@
     <Compile Include="src/Proofs/DurableTimerAdapterProof.fs" />
     <Compile Include="src/Proofs/DurableClientAdmissionProof.fs" />
     <Compile Include="src/Proofs/DurableSignalAdmissionProof.fs" />
+    <Compile Include="src/Proofs/DurableStatusProof.fs" />
     <Compile Include="src/Proofs/Registry.fs" />
     <Compile Include="src/Program.fs" />
   </ItemGroup>

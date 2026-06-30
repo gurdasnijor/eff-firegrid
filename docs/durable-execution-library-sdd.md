@@ -177,10 +177,17 @@ module DurableClient =
         name: string ->
         payload: Payload ->
         Async<DurableClientSignalStatus>
+
+    val getStatusWith :
+        basin: S2.Basin ->
+        workflows: WorkflowRegistry ->
+        instanceId: InstanceId ->
+        Async<DurableClientStatusRead>
 ```
 
 The final ergonomic `Start` / `RaiseSignal` wrapper can generate instance ids
-and source sequence numbers above this deterministic core.
+and source sequence numbers above this deterministic core. The final
+`GetStatus` wrapper can close over the runtime's registered workflows.
 
 ### Host API
 
@@ -366,15 +373,17 @@ Proof obligations:
 
 ### L7 Durable Client Admission
 
-Implemented: expose `DurableClient.startWith` and
-`DurableClient.raiseSignalWith` as the first durable client admission calls, and
-`DurableHost.runWorkflowTick` as the registry-backed host entry for started
-instances. A start writes a `StartWorkflow` envelope to `{instance}/in`; inbox
-fold records `WorkflowStarted`; the host selects the registered workflow factory
-from that durable record. A signal writes a `RaiseSignal` envelope to the same
-inbox; fold records the accepted envelope, and host delivery commits
-`SignalReceived` plus `SignalDelivered(source, sourceSeqNum, opId)` when replay
-is waiting on that signal.
+Implemented: expose `DurableClient.startWith`,
+`DurableClient.raiseSignalWith`, and `DurableClient.getStatusWith` as the first
+durable client calls, and `DurableHost.runWorkflowTick` as the registry-backed
+host entry for started instances. A start writes a `StartWorkflow` envelope to
+`{instance}/in`; inbox fold records `WorkflowStarted`; the host selects the
+registered workflow factory from that durable record. A signal writes a
+`RaiseSignal` envelope to the same inbox; fold records the accepted envelope,
+and host delivery commits `SignalReceived` plus
+`SignalDelivered(source, sourceSeqNum, opId)` when replay is waiting on that
+signal. Status reads the folded log, rebuilds history, and classifies the
+instance by replaying without committing.
 
 Proof obligations:
 
@@ -387,12 +396,14 @@ Proof obligations:
 - duplicate `RaiseSignalWith` attempts fold into one effective signal
 - a delivered signal completes the matching wait from durable history
 - the same admitted signal cannot satisfy a later wait
+- status for not found, running, waiting, completed, and missing workflow states
+  is derived from durable records
 
 Still pending for the client surface:
 
 - generated instance ids
-- `GetStatus`
 - ergonomic source sequence generation for `RaiseSignal`
+- ergonomic runtime-bound `GetStatus`
 
 ### L8 Ergonomic Host
 

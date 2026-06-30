@@ -67,6 +67,14 @@ let statusText =
     | DurableAppWorkflowStatus.Completed(workflow, payload) -> "completed:" + workflow + ":" + payload
     | DurableAppWorkflowStatus.Failed failure -> "failed:" + string failure
 
+let typedIntStatusText =
+    function
+    | DurableAppTypedWorkflowStatus.NotFound -> "not-found"
+    | DurableAppTypedWorkflowStatus.Running -> "running"
+    | DurableAppTypedWorkflowStatus.Waiting need -> "waiting:" + needText need
+    | DurableAppTypedWorkflowStatus.Completed value -> "completed:" + string value
+    | DurableAppTypedWorkflowStatus.Failed failure -> "failed:" + string failure
+
 let startInstance =
     function
     | DurableAppStartResult.Started instanceId -> instanceId
@@ -206,8 +214,8 @@ let tutorial =
         let! _ = client.startWith typedMathId typedMath 31
         let! _ = worker.runUntilIdle typedMathId
 
-        let! typedMathStatus = client.status typedMathId
-        printfn "typed math status: %s" (statusText typedMathStatus)
+        let! typedMathStatus = client.statusOf typedMath typedMathId
+        printfn "typed math status: %s" (typedIntStatusText typedMathStatus)
 
         do! deleteInstance basin typedMathId
         do! deleteInstance basin timeoutId

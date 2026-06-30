@@ -58,6 +58,8 @@ type DurableAppStatusFailure =
     | ReadFailed of string
     | DecodeFailed of seqNum: int64 * error: string
     | WorkflowNotFound of workflow: string
+    | WorkflowMismatch of expected: string * actual: string
+    | OutputDecodeFailed of workflow: string * error: string
 
 [<RequireQualifiedAccess>]
 type DurableAppStartResult =
@@ -86,6 +88,14 @@ type DurableAppWorkflowStatus =
     | Running of workflow: string
     | Waiting of workflow: string * need: DurableAppNeed
     | Completed of workflow: string * output: string
+    | Failed of DurableAppStatusFailure
+
+[<RequireQualifiedAccess>]
+type DurableAppTypedWorkflowStatus<'output> =
+    | NotFound
+    | Running
+    | Waiting of DurableAppNeed
+    | Completed of 'output
     | Failed of DurableAppStatusFailure
 
 type DurableAppWorkerInstanceResult =
@@ -159,6 +169,39 @@ type DurableAppClient internal (runtime: DurableRuntime) =
         | DurableClientStatusRead.Failed failure ->
             DurableAppWorkflowStatus.Failed(DurableAppClient.StatusFailure failure)
 
+    static member private DecodeWorkflowOutput (workflow: Workflow<'input, 'output>) payload =
+        try
+            Ok(workflow.DecodeOutput payload)
+        with error ->
+            Error(DurableAppStatusFailure.OutputDecodeFailed(WorkflowName.value workflow.Name, error.Message))
+
+    static member private TypedWorkflowStatus (workflow: Workflow<'input, 'output>) status =
+        let expected = WorkflowName.value workflow.Name
+
+        let mismatch actual =
+            DurableAppStatusFailure.WorkflowMismatch(expected, actual)
+
+        match status with
+        | DurableAppWorkflowStatus.NotFound -> DurableAppTypedWorkflowStatus.NotFound
+        | DurableAppWorkflowStatus.Running actual ->
+            if actual = expected then
+                DurableAppTypedWorkflowStatus.Running
+            else
+                DurableAppTypedWorkflowStatus.Failed(mismatch actual)
+        | DurableAppWorkflowStatus.Waiting(actual, need) ->
+            if actual = expected then
+                DurableAppTypedWorkflowStatus.Waiting need
+            else
+                DurableAppTypedWorkflowStatus.Failed(mismatch actual)
+        | DurableAppWorkflowStatus.Completed(actual, payload) ->
+            if actual = expected then
+                match DurableAppClient.DecodeWorkflowOutput workflow payload with
+                | Ok output -> DurableAppTypedWorkflowStatus.Completed output
+                | Error failure -> DurableAppTypedWorkflowStatus.Failed failure
+            else
+                DurableAppTypedWorkflowStatus.Failed(mismatch actual)
+        | DurableAppWorkflowStatus.Failed failure -> DurableAppTypedWorkflowStatus.Failed failure
+
     member _.start (workflow: Workflow<'input, 'output>) (input: 'input) =
         async {
             let! result = runtime.Client.Start workflow.Name (workflow.EncodeInput input)
@@ -181,6 +224,12 @@ type DurableAppClient internal (runtime: DurableRuntime) =
         async {
             let! result = runtime.Client.GetStatus instanceId
             return DurableAppClient.WorkflowStatus result
+        }
+
+    member this.statusOf (workflow: Workflow<'input, 'output>) instanceId =
+        async {
+            let! status = this.status instanceId
+            return DurableAppClient.TypedWorkflowStatus workflow status
         }
 
 type DurableAppWorker =

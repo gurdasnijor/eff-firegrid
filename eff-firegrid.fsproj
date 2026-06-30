@@ -69,6 +69,7 @@
     <Compile Include="src/Proofs/DurableTestHostProof.fs" />
     <Compile Include="src/Proofs/DurableEnvironmentBootstrapProof.fs" />
     <Compile Include="src/Proofs/DurableWorkerLoopProof.fs" />
+    <Compile Include="src/Proofs/DurableTypedStatusProof.fs" />
     <Compile Include="src/Proofs/Registry.fs" />
     <Compile Include="src/Program.fs" />
   </ItemGroup>

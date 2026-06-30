@@ -97,7 +97,7 @@ let instanceId =
     | DurableAppStartResult.Rejected failure -> failwith (string failure)
 
 do! worker.runUntilIdle instanceId |> Async.Ignore
-let! status = client.status instanceId
+let! status = client.statusOf checkout instanceId
 
 let! _ = client.startWith (InstanceId.create "approval-123") approval "order-123"
 let! _ = client.signal (InstanceId.create "approval-123") approved "alice"
@@ -176,6 +176,13 @@ type DurableAppSignalResult =
     | Accepted
     | Rejected of DurableAppSignalFailure
 
+type DurableAppStatusFailure =
+    | ReadFailed of string
+    | DecodeFailed of seqNum: int64 * error: string
+    | WorkflowNotFound of workflow: string
+    | WorkflowMismatch of expected: string * actual: string
+    | OutputDecodeFailed of workflow: string * error: string
+
 type DurableAppWorkflowStatus =
     | NotFound
     | Running of workflow: string
@@ -183,11 +190,19 @@ type DurableAppWorkflowStatus =
     | Completed of workflow: string * output: string
     | Failed of DurableAppStatusFailure
 
+type DurableAppTypedWorkflowStatus<'output> =
+    | NotFound
+    | Running
+    | Waiting of DurableAppNeed
+    | Completed of 'output
+    | Failed of DurableAppStatusFailure
+
 type DurableAppClient =
     member start : Workflow<'input, 'output> -> 'input -> Async<DurableAppStartResult>
     member startWith : InstanceId -> Workflow<'input, 'output> -> 'input -> Async<DurableAppStartResult>
     member signal : InstanceId -> Signal<'payload> -> 'payload -> Async<DurableAppSignalResult>
     member status : InstanceId -> Async<DurableAppWorkflowStatus>
+    member statusOf : Workflow<'input, 'output> -> InstanceId -> Async<DurableAppTypedWorkflowStatus<'output>>
 
 type DurableAppWorkerInstanceResult =
     { InstanceId : InstanceId
@@ -256,6 +271,9 @@ Implemented and proof-backed today:
   `DurableAppSignalResult`, and `DurableAppWorkflowStatus`.
 - `Activity.defineWith`, `Workflow.defineWith`, and `Signal.defineWith` attach
   explicit codecs to handles while keeping durable storage as string payloads.
+- `DurableAppClient.statusOf` reads workflow-specific status through a workflow
+  handle, decodes completion payloads through that handle, and fails closed on
+  workflow mismatch.
 - The compiled proof runner validates the above against pure laws and ephemeral
   S2 streams.
 
@@ -446,6 +464,30 @@ Proof obligations:
 - completed instances do not stay active forever merely because their inbox
   stream still exists
 - bounded polling and cancellation leave no partially-owned loop state
+
+### L7 Typed Workflow Status
+
+Implemented: app clients can read status through a workflow handle. Completion
+payloads decode into the workflow output type, while raw string status remains
+available for diagnostics.
+
+```fsharp
+let! status = client.statusOf typedMath instanceId
+
+match status with
+| DurableAppTypedWorkflowStatus.Completed value -> printfn "%d" value
+| DurableAppTypedWorkflowStatus.Waiting need -> printfn "waiting: %A" need
+| DurableAppTypedWorkflowStatus.Failed failure -> printfn "failed: %A" failure
+| _ -> ()
+```
+
+Proof obligations:
+
+- completed payloads decode through the workflow handle
+- raw status remains available for diagnostics
+- waiting status is scoped by the supplied workflow handle
+- the wrong workflow handle fails closed instead of decoding a foreign payload
+- output decode exceptions are reported as typed status failures
 
 ## Example Target
 

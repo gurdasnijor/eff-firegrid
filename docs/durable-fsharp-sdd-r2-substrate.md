@@ -142,12 +142,27 @@ Implemented slices:
   duplicate `StartWith` folding to one effective start, registered-workflow
   execution, activity completion after start admission, typed missing-workflow
   failure, and no-start detection.
+- **Tier 2.11 client signal admission and delivery.**
+  `DurableClient.raiseSignalWith` admits external events through the same
+  durable inbox path as starts, activity completions, and timers. The caller
+  supplies a source sequence number, making retries explicit and fold-level
+  dedup deterministic. `InboxFold.runOnce` records accepted signal envelopes
+  but does not assign workflow operation ids. `DurableHost.runOwnedTick`
+  delivers an accepted signal only after replay exposes a matching
+  `NeedsEvent(Signal _)` or `NeedsRace` signal branch, then commits both
+  `SignalReceived` and `SignalDelivered(source, sourceSeqNum, opId)` in one
+  fenced append. The delivery marker prevents the same admitted signal from
+  satisfying a later wait. The compiled proof covers waiting before signal
+  admission, durable signal acknowledgement before delivery, duplicate
+  `RaiseSignalWith` folding to one accepted signal, host advancement on
+  delivery, completion from the delivered payload, and exactly-once signal
+  consumption by source sequence.
 
 Next slices, still one layer + proof at a time:
 
-- implement `RaiseSignal` admission and signal delivery through the composed
-  host tick, then derive `GetStatus` from durable history rather than volatile
-  host state.
+- derive `GetStatus` from durable history rather than volatile host state, then
+  add generated instance ids and the higher-level ergonomic client wrapper over
+  `startWith` / `raiseSignalWith`.
 
 One surprising constraint surfaced from your own code — see §1.
 

@@ -158,9 +158,29 @@ type DurableClient =
       GetStatus: InstanceId -> Async<InstanceStatus> }
 ```
 
-Start and signal admission should write to durable S2 streams in a way that is
-safe under retries. The exact record shape is a build slice, not a doc-only
-promise.
+Start and signal admission write durable inbox envelopes. The current
+implemented layer exposes deterministic retry surfaces:
+
+```fsharp
+module DurableClient =
+    val startWith :
+        basin: S2.Basin ->
+        instanceId: InstanceId ->
+        workflowName: WorkflowName ->
+        input: Payload ->
+        Async<DurableClientStartStatus>
+
+    val raiseSignalWith :
+        basin: S2.Basin ->
+        instanceId: InstanceId ->
+        sourceSeqNum: int64 ->
+        name: string ->
+        payload: Payload ->
+        Async<DurableClientSignalStatus>
+```
+
+The final ergonomic `Start` / `RaiseSignal` wrapper can generate instance ids
+and source sequence numbers above this deterministic core.
 
 ### Host API
 
@@ -344,13 +364,17 @@ Proof obligations:
 - timer outcomes replay deterministically from history
 - composed host ticks advance `Workflow.sleepUntil`
 
-### L7 Durable Client Start Admission
+### L7 Durable Client Admission
 
-Implemented: expose `DurableClient.startWith` as the first durable client
-admission call and `DurableHost.runWorkflowTick` as the registry-backed host
-entry for started instances. A start writes a `StartWorkflow` envelope to
-`{instance}/in`; inbox fold records `WorkflowStarted`; the host selects the
-registered workflow factory from that durable record.
+Implemented: expose `DurableClient.startWith` and
+`DurableClient.raiseSignalWith` as the first durable client admission calls, and
+`DurableHost.runWorkflowTick` as the registry-backed host entry for started
+instances. A start writes a `StartWorkflow` envelope to `{instance}/in`; inbox
+fold records `WorkflowStarted`; the host selects the registered workflow factory
+from that durable record. A signal writes a `RaiseSignal` envelope to the same
+inbox; fold records the accepted envelope, and host delivery commits
+`SignalReceived` plus `SignalDelivered(source, sourceSeqNum, opId)` when replay
+is waiting on that signal.
 
 Proof obligations:
 
@@ -359,12 +383,16 @@ Proof obligations:
 - the host starts the registered workflow from the folded start record
 - missing workflows surface as typed failures
 - empty instances report no durable start
+- signal admission is retry-safe for a supplied source sequence number
+- duplicate `RaiseSignalWith` attempts fold into one effective signal
+- a delivered signal completes the matching wait from durable history
+- the same admitted signal cannot satisfy a later wait
 
 Still pending for the client surface:
 
 - generated instance ids
-- `RaiseSignal`
 - `GetStatus`
+- ergonomic source sequence generation for `RaiseSignal`
 
 ### L8 Ergonomic Host
 

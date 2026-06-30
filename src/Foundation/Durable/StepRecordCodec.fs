@@ -201,6 +201,8 @@ module StepRecordCodec =
         | WorkflowStarted(name, input) -> prefixed "workflow.started" (fields [ workflowNameText name; input ])
         | HistoryEvent event -> eventPrefix event
         | Command command -> commandPrefix command
+        | SignalDelivered(source, sourceSeqNum, opId) ->
+            prefixed "signal.delivered" (fields [ source; string sourceSeqNum; opText opId ])
         | CommandDispatchCheckpoint(dispatcher, nextSeqNum) ->
             prefixed "dispatch.checkpoint" (fields [ dispatcher; string nextSeqNum ])
         | InboxCheckpoint nextSeqNum -> prefixed "inbox.checkpoint" (fields [ string nextSeqNum ])
@@ -340,6 +342,17 @@ module StepRecordCodec =
             |> Result.bind (function
                 | [ name; input ] -> Ok(WorkflowStarted(WorkflowName name, input))
                 | _ -> Error "bad workflow started field count")
+        | Ok(prefix, _, start) when prefix = "signal.delivered" ->
+            readFields 3 text start
+            |> Result.bind (function
+                | [ source; sourceSeqNum; opId ] ->
+                    parseInt64 "source seq num" sourceSeqNum
+                    |> Result.bind (fun seqNum ->
+                        if seqNum < 0L then
+                            Error("bad source seq num: " + sourceSeqNum)
+                        else
+                            parseOp opId |> Result.map (fun id -> SignalDelivered(source, seqNum, id)))
+                | _ -> Error "bad signal delivered field count")
         | Ok(prefix, _, start) when prefix = "dispatch.checkpoint" ->
             readFields 2 text start
             |> Result.bind (function

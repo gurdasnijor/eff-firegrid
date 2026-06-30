@@ -36,11 +36,52 @@ type DurableAppWorkerConfig =
       HostId: string
       MaxRunUntilIdleTicks: int option }
 
+[<RequireQualifiedAccess>]
+type DurableAppStartFailure = AppendFailed of string
+
+[<RequireQualifiedAccess>]
+type DurableAppSignalFailure = AppendFailed of string
+
+[<RequireQualifiedAccess>]
+type DurableAppStatusFailure =
+    | ReadFailed of string
+    | DecodeFailed of seqNum: int64 * error: string
+    | WorkflowNotFound of workflow: string
+
+[<RequireQualifiedAccess>]
+type DurableAppStartResult =
+    | Started of InstanceId
+    | Rejected of DurableAppStartFailure
+
+[<RequireQualifiedAccess>]
+type DurableAppSignalResult =
+    | Accepted
+    | Rejected of DurableAppSignalFailure
+
+[<RequireQualifiedAccess>]
+type DurableAppNeed =
+    | Activity of name: string
+    | Activities of names: string list
+    | Timer of deadline: int64
+    | Signal of name: string
+    | Race of contenders: string list
+    | TimerCancellation of count: int
+    | CurrentTime
+    | Log of message: string
+
+[<RequireQualifiedAccess>]
+type DurableAppWorkflowStatus =
+    | NotFound
+    | Running of workflow: string
+    | Waiting of workflow: string * need: DurableAppNeed
+    | Completed of workflow: string * output: string
+    | Failed of DurableAppStatusFailure
+
 type DurableAppClient =
-    { start: Workflow<string, string> -> string -> Async<DurableClientStartStatus>
-      startWith: InstanceId -> Workflow<string, string> -> string -> Async<DurableClientStartStatus>
-      signal: InstanceId -> Signal<string> -> string -> Async<DurableClientSignalStatus>
-      status: InstanceId -> Async<DurableClientStatusRead> }
+    { start: Workflow<string, string> -> string -> Async<DurableAppStartResult>
+      startWith: InstanceId -> Workflow<string, string> -> string -> Async<DurableAppStartResult>
+      signal: InstanceId -> Signal<string> -> string -> Async<DurableAppSignalResult>
+      status: InstanceId -> Async<DurableAppWorkflowStatus> }
 
 type DurableAppWorker =
     { runOnce: InstanceId -> Async<DurableWorkflowHostStatus>
@@ -174,17 +215,91 @@ module DurableApp =
         let (DurableStorage basin) = storage
         DurableRuntime.create options basin (workflows app) (activities app)
 
+    let private startResult =
+        function
+        | DurableClientStartStatus.Accepted ack -> DurableAppStartResult.Started ack.InstanceId
+        | DurableClientStartStatus.Failed failure ->
+            match failure with
+            | DurableClientFailure.StartAppendFailed error
+            | DurableClientFailure.SignalAppendFailed error ->
+                DurableAppStartResult.Rejected(DurableAppStartFailure.AppendFailed error)
+
+    let private signalResult =
+        function
+        | DurableClientSignalStatus.Accepted _ -> DurableAppSignalResult.Accepted
+        | DurableClientSignalStatus.Failed failure ->
+            match failure with
+            | DurableClientFailure.SignalAppendFailed error
+            | DurableClientFailure.StartAppendFailed error ->
+                DurableAppSignalResult.Rejected(DurableAppSignalFailure.AppendFailed error)
+
+    let private taskText =
+        function
+        | RaceActivity activity -> "activity:" + activity.Name
+        | RaceEvent(Timer deadline) -> "timer:" + string deadline
+        | RaceEvent(Signal name) -> "signal:" + name
+
+    let private needSummary =
+        function
+        | NeedsActivity activity -> DurableAppNeed.Activity activity.Name
+        | NeedsActivities activities ->
+            activities
+            |> List.map (fun (_, activity) -> activity.Name)
+            |> DurableAppNeed.Activities
+        | NeedsEvent(Timer deadline) -> DurableAppNeed.Timer deadline
+        | NeedsEvent(Signal name) -> DurableAppNeed.Signal name
+        | NeedsRace tasks -> tasks |> List.map (fun (_, task) -> taskText task) |> DurableAppNeed.Race
+        | NeedsTimerCancellation timers -> DurableAppNeed.TimerCancellation timers.Length
+        | NeedsCurrentTime -> DurableAppNeed.CurrentTime
+        | NeedsLog message -> DurableAppNeed.Log message
+
+    let private statusFailure =
+        function
+        | DurableClientStatusFailure.StatusReadFailed error -> DurableAppStatusFailure.ReadFailed error
+        | DurableClientStatusFailure.StatusDecodeFailed(seqNum, error) ->
+            DurableAppStatusFailure.DecodeFailed(seqNum, error)
+        | DurableClientStatusFailure.WorkflowNotFound workflow ->
+            DurableAppStatusFailure.WorkflowNotFound(WorkflowName.value workflow)
+
+    let private workflowStatus =
+        function
+        | DurableClientStatusRead.Succeeded InstanceNotFound -> DurableAppWorkflowStatus.NotFound
+        | DurableClientStatusRead.Succeeded(InstanceRunning workflow) ->
+            DurableAppWorkflowStatus.Running(WorkflowName.value workflow)
+        | DurableClientStatusRead.Succeeded(InstanceWaiting(workflow, _, need)) ->
+            DurableAppWorkflowStatus.Waiting(WorkflowName.value workflow, needSummary need)
+        | DurableClientStatusRead.Succeeded(InstanceCompleted(workflow, payload)) ->
+            DurableAppWorkflowStatus.Completed(WorkflowName.value workflow, payload)
+        | DurableClientStatusRead.Failed failure -> DurableAppWorkflowStatus.Failed(statusFailure failure)
+
     let clientWith (config: DurableAppClientConfig) app =
         let runtime =
             runtimeFrom (DurableRuntimeOptions.create "durable-app-client") config.Storage app
 
-        { start = fun workflow input -> runtime.Client.Start workflow.Name (workflow.EncodeInput input)
+        { start =
+            fun workflow input ->
+                async {
+                    let! result = runtime.Client.Start workflow.Name (workflow.EncodeInput input)
+                    return startResult result
+                }
           startWith =
             fun instanceId workflow input ->
-                runtime.Client.StartWith instanceId workflow.Name (workflow.EncodeInput input)
+                async {
+                    let! result = runtime.Client.StartWith instanceId workflow.Name (workflow.EncodeInput input)
+                    return startResult result
+                }
           signal =
-            fun instanceId signal payload -> runtime.Client.RaiseSignal instanceId signal.Name (signal.Encode payload)
-          status = runtime.Client.GetStatus }
+            fun instanceId signal payload ->
+                async {
+                    let! result = runtime.Client.RaiseSignal instanceId signal.Name (signal.Encode payload)
+                    return signalResult result
+                }
+          status =
+            fun instanceId ->
+                async {
+                    let! result = runtime.Client.GetStatus instanceId
+                    return workflowStatus result
+                } }
 
     let workerWith (config: DurableAppWorkerConfig) app =
         if config.HostId.Length > 15 then

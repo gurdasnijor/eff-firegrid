@@ -69,8 +69,8 @@ module DurableAppFacadeProof =
 
     let private startedInstance =
         function
-        | DurableClientStartStatus.Accepted ack -> Some ack.InstanceId
-        | DurableClientStartStatus.Failed _ -> None
+        | DurableAppStartResult.Started instanceId -> Some instanceId
+        | DurableAppStartResult.Rejected _ -> None
 
     let private lastStatus =
         function
@@ -130,37 +130,39 @@ module DurableAppFacadeProof =
                 let! checkoutStatus =
                     match checkoutInstance with
                     | Some instanceId -> client.status instanceId
-                    | None -> async { return DurableClientStatusRead.Succeeded InstanceNotFound }
+                    | None -> async { return DurableAppWorkflowStatus.NotFound }
 
                 let clientStatusReadsCompletion =
                     match checkoutStatus with
-                    | DurableClientStatusRead.Succeeded(InstanceCompleted(workflowName, "charged:reserved:order-1")) ->
-                        WorkflowName.value workflowName = "app-checkout"
+                    | DurableAppWorkflowStatus.Completed("app-checkout", "charged:reserved:order-1") -> true
                     | _ -> false
 
                 let approvalInstance = InstanceId.create ("app-approval-" + suffix)
                 let! _ = client.startWith approvalInstance approval "order-2"
                 let! _ = worker.runUntilIdle approvalInstance
-                let! _ = client.signal approvalInstance approved "alice"
+                let! approvalSignal = client.signal approvalInstance approved "alice"
                 let! approvalTicks = worker.runUntilIdle approvalInstance
 
                 let clientSignalCompletesWorkflow =
-                    match lastStatus approvalTicks with
-                    | Some(DurableWorkflowHostStatus.Ticked(DurableHostTickStatus.Completed("order-2:approved-by:alice",
-                                                                                            _))) -> true
-                    | _ -> false
+                    approvalSignal = DurableAppSignalResult.Accepted
+                    && match lastStatus approvalTicks with
+                       | Some(DurableWorkflowHostStatus.Ticked(DurableHostTickStatus.Completed("order-2:approved-by:alice",
+                                                                                               _))) -> true
+                       | _ -> false
 
                 let raceInstance = InstanceId.create ("app-race-" + suffix)
                 let futureDeadline = int64 (Reports.nowMillis ()) + 60000L
                 let! _ = client.startWith raceInstance approvalOrTimeout (string futureDeadline)
                 let! _ = worker.runUntilIdle raceInstance
-                let! _ = client.signal raceInstance approved "bob"
+                let! raceSignal = client.signal raceInstance approved "bob"
                 let! raceTicks = worker.runUntilIdle raceInstance
 
                 let raceWorkflowCompletesFromTypedSignal =
-                    match lastStatus raceTicks with
-                    | Some(DurableWorkflowHostStatus.Ticked(DurableHostTickStatus.Completed("approved:bob", _))) -> true
-                    | _ -> false
+                    raceSignal = DurableAppSignalResult.Accepted
+                    && match lastStatus raceTicks with
+                       | Some(DurableWorkflowHostStatus.Ticked(DurableHostTickStatus.Completed("approved:bob", _))) ->
+                           true
+                       | _ -> false
 
                 match checkoutInstance with
                 | Some instanceId -> do! deleteInstance basin instanceId

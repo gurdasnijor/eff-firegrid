@@ -93,8 +93,8 @@ let! start = client.start checkout "order-123"
 
 let instanceId =
     match start with
-    | DurableClientStartStatus.Accepted ack -> ack.InstanceId
-    | DurableClientStartStatus.Failed failure -> failwith (string failure)
+    | DurableAppStartResult.Started instanceId -> instanceId
+    | DurableAppStartResult.Rejected failure -> failwith (string failure)
 
 do! worker.runUntilIdle instanceId |> Async.Ignore
 let! status = client.status instanceId
@@ -144,11 +144,26 @@ module Durable =
     val currentTime : Durable<int64>
     val log : message: string -> Durable<unit>
 
+type DurableAppStartResult =
+    | Started of InstanceId
+    | Rejected of DurableAppStartFailure
+
+type DurableAppSignalResult =
+    | Accepted
+    | Rejected of DurableAppSignalFailure
+
+type DurableAppWorkflowStatus =
+    | NotFound
+    | Running of workflow: string
+    | Waiting of workflow: string * need: DurableAppNeed
+    | Completed of workflow: string * output: string
+    | Failed of DurableAppStatusFailure
+
 type DurableAppClient =
-    { start : Workflow<string, string> -> string -> Async<DurableClientStartStatus>
-      startWith : InstanceId -> Workflow<string, string> -> string -> Async<DurableClientStartStatus>
-      signal : InstanceId -> Signal<string> -> string -> Async<DurableClientSignalStatus>
-      status : InstanceId -> Async<DurableClientStatusRead> }
+    { start : Workflow<string, string> -> string -> Async<DurableAppStartResult>
+      startWith : InstanceId -> Workflow<string, string> -> string -> Async<DurableAppStartResult>
+      signal : InstanceId -> Signal<string> -> string -> Async<DurableAppSignalResult>
+      status : InstanceId -> Async<DurableAppWorkflowStatus> }
 
 type DurableAppWorker =
     { runOnce : InstanceId -> Async<DurableWorkflowHostStatus>
@@ -200,6 +215,8 @@ Implemented and proof-backed today:
   `Activity.define`, `Workflow.define`, `Signal.define`, `Durable.call`,
   `Durable.waitForSignal`, `durableApp { ... }`, `DurableApp.clientWith`, and
   `DurableApp.workerWith`.
+- App client calls project lower client outcomes into `DurableAppStartResult`,
+  `DurableAppSignalResult`, and `DurableAppWorkflowStatus`.
 - The compiled proof runner validates the above against pure laws and ephemeral
   S2 streams.
 
@@ -251,25 +268,25 @@ Proof obligations:
 
 ### L2 Result Polish
 
-Replace raw lower-level `DurableClientStartStatus`, `DurableClientSignalStatus`,
-and `DurableClientStatusRead` at the app boundary with app-level results:
+Implemented: app client calls return app-level result and status types instead
+of raw lower-level `DurableClientStartStatus`, `DurableClientSignalStatus`, and
+`DurableClientStatusRead`.
 
 ```fsharp
-type StartResult =
+type DurableAppStartResult =
     | Started of InstanceId
-    | AlreadyStarted of InstanceId
-    | StartRejected of DurableClientFailure
+    | Rejected of DurableAppStartFailure
 
-type SignalResult =
-    | SignalAccepted
-    | SignalRejected of DurableClientFailure
+type DurableAppSignalResult =
+    | Accepted
+    | Rejected of DurableAppSignalFailure
 
-type WorkflowStatus =
+type DurableAppWorkflowStatus =
     | NotFound
-    | Running
-    | Waiting of NeedSummary
-    | Completed of string
-    | Failed of string
+    | Running of workflow: string
+    | Waiting of workflow: string * need: DurableAppNeed
+    | Completed of workflow: string * output: string
+    | Failed of DurableAppStatusFailure
 ```
 
 Proof obligations:

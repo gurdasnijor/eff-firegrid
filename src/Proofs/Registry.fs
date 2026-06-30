@@ -19,4 +19,5 @@ module Registry =
           DurableClientAdmissionProof.proof
           DurableSignalAdmissionProof.proof
           DurableStatusProof.proof
-          DurableRuntimeProof.proof ]
+          DurableRuntimeProof.proof
+          DurableAppFacadeProof.proof ]

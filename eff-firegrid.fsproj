@@ -32,6 +32,7 @@
     <Compile Include="src/Foundation/Durable/TimerAdapter.fs" />
     <Compile Include="src/Foundation/Durable/Host.fs" />
     <Compile Include="src/Foundation/Durable/Runtime.fs" />
+    <Compile Include="src/Foundation/Durable/App.fs" />
     <Compile Include="src/Proofs/Proof.fs" />
     <Compile Include="src/Proofs/Reports.fs" />
     <Compile Include="src/Proofs/S2Lite.fs" />
@@ -63,6 +64,7 @@
     <Compile Include="src/Proofs/DurableSignalAdmissionProof.fs" />
     <Compile Include="src/Proofs/DurableStatusProof.fs" />
     <Compile Include="src/Proofs/DurableRuntimeProof.fs" />
+    <Compile Include="src/Proofs/DurableAppFacadeProof.fs" />
     <Compile Include="src/Proofs/Registry.fs" />
     <Compile Include="src/Program.fs" />
   </ItemGroup>

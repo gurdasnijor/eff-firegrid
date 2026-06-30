@@ -1,13 +1,15 @@
 # Durable Runtime Tutorial
 
-This tutorial is the first copyable application surface for the durable runtime.
-It intentionally uses `DurableRuntime.create` rather than the lower substrate
-modules.
+This tutorial is the first copyable application surface for the durable app
+facade. It intentionally uses `Activity.define`, `Workflow.define`,
+`Signal.define`, `durableApp`, `DurableApp.clientWith`, and
+`DurableApp.workerWith` rather than raw registries or `DurableRuntime.create`.
 
 The script covers:
 
-- registering activities and workflows
-- constructing a runtime from an S2 basin
+- defining activities, workflows, and signals
+- assembling a durable app
+- constructing a client and worker from an S2 basin
 - starting a workflow with a generated instance id
 - running the host until the instance is idle
 - reading durable status

@@ -23,9 +23,11 @@
 #load "../../../src/Foundation/Durable/TimerAdapter.fs"
 #load "../../../src/Foundation/Durable/Host.fs"
 #load "../../../src/Foundation/Durable/Runtime.fs"
+#load "../../../src/Foundation/Durable/App.fs"
 
 open Eff
 open Eff.Foundation.Durable
+open Eff.Foundation.Durable.App
 open Fable.Core
 
 [<Emit("Date.now()")>]
@@ -33,11 +35,6 @@ let nowMillis () : int64 = jsNative
 
 [<Emit("process.env[$0] || $1")>]
 let envOr (_name: string) (_fallback: string) : string = jsNative
-
-let requireOk =
-    function
-    | Ok value -> value
-    | Error error -> failwith (string error)
 
 let workflowText (WorkflowName name) = name
 
@@ -69,42 +66,54 @@ let startInstance =
     | DurableClientStartStatus.Accepted ack -> ack.InstanceId
     | DurableClientStartStatus.Failed failure -> failwith ("start failed: " + string failure)
 
-let workflows =
-    WorkflowRegistry.empty
-    |> WorkflowRegistry.register "checkout" (fun orderId ->
+module D = Eff.Foundation.Durable.App.Durable
+module T = Eff.Foundation.Durable.App.DurableTask
+
+let reserve =
+    Activity.define "reserve" (fun orderId -> async { return "reserved:" + orderId })
+
+let charge =
+    Activity.define "charge" (fun reservation -> async { return "charged:" + reservation })
+
+let approved = Signal.define "approved"
+
+let checkout =
+    Workflow.define "checkout" (fun orderId ->
         durable {
-            let! reserved = Workflow.call "reserve" orderId
-            let! charged = Workflow.call "charge" reserved
+            let! reserved = D.call reserve orderId
+            let! charged = D.call charge reserved
             return charged
         })
-    |> Result.bind (
-        WorkflowRegistry.register "approval" (fun orderId ->
-            durable {
-                let! approvedBy = Workflow.waitForSignal "approved"
-                return orderId + ":approved-by:" + approvedBy
-            })
-    )
-    |> Result.bind (
-        WorkflowRegistry.register "approval-or-timeout" (fun deadlineText ->
-            durable {
-                let deadline = int64 deadlineText
 
-                let! winner = Workflow.any [ DurableTask.signal "approved"; DurableTask.timer deadline ]
+let approval =
+    Workflow.define "approval" (fun orderId ->
+        durable {
+            let! approvedBy = D.waitForSignal approved
+            return orderId + ":approved-by:" + approvedBy
+        })
 
-                match winner with
-                | EventWon(_, Signal "approved", approver) -> return "approved:" + approver
-                | EventWon(_, Timer _, _) -> return "timed-out"
-                | ActivityWon _ -> return "unexpected"
-                | EventWon(_, Signal name, _) -> return "unexpected-signal:" + name
-            })
-    )
-    |> requireOk
+let approvalOrTimeout =
+    Workflow.define "approval-or-timeout" (fun deadlineText ->
+        durable {
+            let deadline = int64 deadlineText
 
-let activities =
-    ActivityRegistry.empty
-    |> ActivityRegistry.register "reserve" (fun orderId -> async { return "reserved:" + orderId })
-    |> Result.bind (ActivityRegistry.register "charge" (fun reservation -> async { return "charged:" + reservation }))
-    |> requireOk
+            let! winner = D.any [ T.signal approved; T.timer deadline ]
+
+            match winner with
+            | EventWon(_, Signal "approved", approver) -> return "approved:" + approver
+            | EventWon(_, Timer _, _) -> return "timed-out"
+            | ActivityWon _ -> return "unexpected"
+            | EventWon(_, Signal name, _) -> return "unexpected-signal:" + name
+        })
+
+let app =
+    durableApp {
+        activity reserve
+        activity charge
+        workflow checkout
+        workflow approval
+        workflow approvalOrTimeout
+    }
 
 let deleteInstance basin instanceId =
     async {
@@ -119,45 +128,48 @@ let tutorial =
         let s2 = S2Cli.connect ()
         let basin = s2 |> S2.basin basinName
 
-        let runtime =
-            DurableRuntime.create
-                { DurableRuntimeOptions.create "tutorial-host" with
-                    MaxRunUntilIdleTicks = 10 }
-                basin
-                workflows
-                activities
+        let storage = DurableStorage.s2 basin
+
+        let client = app |> DurableApp.clientWith { Storage = storage }
+
+        let worker =
+            app
+            |> DurableApp.workerWith
+                { Storage = storage
+                  HostId = "tutorial"
+                  MaxRunUntilIdleTicks = Some 10 }
 
         printfn "using basin: %s" basinName
 
-        let! checkoutStart = runtime.Client.Start (WorkflowName.create "checkout") "order-1"
+        let! checkoutStart = client.start checkout "order-1"
         let checkoutId = startInstance checkoutStart
         printfn "checkout instance: %s" (instanceText checkoutId)
 
-        let! checkoutTicks = runtime.Host.RunUntilIdle checkoutId
+        let! checkoutTicks = worker.runUntilIdle checkoutId
         printfn "checkout ticks: %d" (List.length checkoutTicks)
 
-        let! checkoutStatus = runtime.Client.GetStatus checkoutId
+        let! checkoutStatus = client.status checkoutId
         printfn "checkout status: %s" (statusText checkoutStatus)
 
         let approvalId = InstanceId.create ("approval-" + string (nowMillis ()))
-        let! _ = runtime.Client.StartWith approvalId (WorkflowName.create "approval") "order-2"
-        let! _ = runtime.Host.RunUntilIdle approvalId
+        let! _ = client.startWith approvalId approval "order-2"
+        let! _ = worker.runUntilIdle approvalId
 
-        let! beforeApproval = runtime.Client.GetStatus approvalId
+        let! beforeApproval = client.status approvalId
         printfn "approval before signal: %s" (statusText beforeApproval)
 
-        let! _ = runtime.Client.RaiseSignal approvalId "approved" "alice"
-        let! _ = runtime.Host.RunUntilIdle approvalId
+        let! _ = client.signal approvalId approved "alice"
+        let! _ = worker.runUntilIdle approvalId
 
-        let! afterApproval = runtime.Client.GetStatus approvalId
+        let! afterApproval = client.status approvalId
         printfn "approval after signal: %s" (statusText afterApproval)
 
         let timeoutId = InstanceId.create ("approval-timeout-" + string (nowMillis ()))
         let pastDeadline = nowMillis () - 1L
-        let! _ = runtime.Client.StartWith timeoutId (WorkflowName.create "approval-or-timeout") (string pastDeadline)
-        let! _ = runtime.Host.RunUntilIdle timeoutId
+        let! _ = client.startWith timeoutId approvalOrTimeout (string pastDeadline)
+        let! _ = worker.runUntilIdle timeoutId
 
-        let! timeoutStatus = runtime.Client.GetStatus timeoutId
+        let! timeoutStatus = client.status timeoutId
         printfn "timeout status: %s" (statusText timeoutStatus)
 
         do! deleteInstance basin timeoutId

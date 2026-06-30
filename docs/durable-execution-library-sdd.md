@@ -189,10 +189,23 @@ type DurableAppClient =
     member signal : InstanceId -> Signal<'payload> -> 'payload -> Async<DurableAppSignalResult>
     member status : InstanceId -> Async<DurableAppWorkflowStatus>
 
+type DurableAppWorkerInstanceResult =
+    { InstanceId : InstanceId
+      Ticks : DurableWorkflowHostStatus list
+      Active : bool }
+
+type DurableAppWorkerPass =
+    { Instances : DurableAppWorkerInstanceResult list
+      ActiveInstances : int }
+
 type DurableAppWorker =
     { runOnce : InstanceId -> Async<DurableWorkflowHostStatus>
       runUntilIdle : InstanceId -> Async<DurableWorkflowHostStatus list>
-      runUntilIdleWith : int -> InstanceId -> Async<DurableWorkflowHostStatus list> }
+      runUntilIdleWith : int -> InstanceId -> Async<DurableWorkflowHostStatus list>
+      discover : unit -> Async<InstanceId list>
+      runReady : unit -> Async<DurableAppWorkerPass>
+      runReadyWith : int -> Async<DurableAppWorkerPass>
+      runForever : System.Threading.CancellationToken -> Async<unit> }
 ```
 
 Worker `HostId` values are capped at 15 characters in the app facade because S2
@@ -415,17 +428,23 @@ Proof obligations:
 
 ### L6 Worker Service Loop
 
-Add instance discovery and `RunForever` after the per-instance worker API is
-stable:
+Implemented first bounded worker loop: app workers can discover durable instance
+inbox streams, run a bounded ready-instance pass, report which discovered
+instances actually advanced, and expose `runForever` as a polling loop built on
+top of that bounded pass.
 
 ```fsharp
+let! pass = worker.runReady ()
+let! bounded = worker.runReadyWith 10
 do! worker.runForever cancellationToken
 ```
 
 Proof obligations:
 
 - scanner does not skip runnable instances whose inbox/log streams exist
-- deposed workers stop publishing progress
+- bounded passes honor the max instance limit
+- completed instances do not stay active forever merely because their inbox
+  stream still exists
 - bounded polling and cancellation leave no partially-owned loop state
 
 ## Example Target

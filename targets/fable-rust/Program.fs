@@ -9,18 +9,22 @@ let replaySummary () =
 
     let draft, receipt = draft |> DurableIr.appendCallActivity "charge" reservation
 
-    let program = draft |> DurableIr.finish receipt
+    let workflow =
+        draft |> DurableIr.finish receipt |> DurableWorkflow.create "checkout"
 
     let history =
         History.empty |> History.append (ActivityCompleted(OpId 0, "reserved:order-1"))
 
-    match DurableIr.replay history program with
-    | Done _ -> "done"
-    | Blocked(_,
-              NeedsActivity { Name = "charge"
-                              Input = "reserved:order-1" }) -> "blocked:dependent-activity"
-    | Blocked(_, NeedsActivity { Name = "reserve"; Input = "order-1" }) -> "blocked:activity"
-    | Blocked(_, _) -> "blocked:other"
+    match DurableWorkflow.validate workflow with
+    | _ :: _ -> "invalid"
+    | [] ->
+        match DurableIr.replay history workflow.Program with
+        | Done _ -> "done"
+        | Blocked(_,
+                  NeedsActivity { Name = "charge"
+                                  Input = "reserved:order-1" }) -> "blocked:dependent-activity"
+        | Blocked(_, NeedsActivity { Name = "reserve"; Input = "order-1" }) -> "blocked:activity"
+        | Blocked(_, _) -> "blocked:other"
 
 [<EntryPoint>]
 let main _ =

@@ -20,6 +20,15 @@ type DurableIrDraft =
     { NextOpId: OpId
       Operations: IrOperation list }
 
+type DurableWorkflow = { Name: string; Program: DurableIr }
+
+type DurableIrIssue =
+    | EmptyWorkflowName
+    | DuplicateOperationId of OpId
+    | NonContiguousOperationId of expected: OpId * actual: OpId
+    | MissingValueSource of OpId
+    | FutureValueSource of source: OpId * consumer: OpId
+
 [<RequireQualifiedAccess>]
 module ValueExpr =
     let literal value = Literal value
@@ -86,6 +95,82 @@ module DurableIr =
         { draft with
             Operations = draft.Operations @ [ writeLog opId message ] }
 
+    let private operationId operation =
+        match operation with
+        | CallActivity(opId, _, _) -> opId
+        | AwaitEvent(opId, _) -> opId
+        | ReadCurrentTime opId -> opId
+        | WriteLog(opId, _) -> opId
+
+    let private operationOutput operation =
+        match operation with
+        | CallActivity(opId, _, _) -> Some(ActivityResult opId)
+        | AwaitEvent(opId, _) -> Some(EventResult opId)
+        | ReadCurrentTime opId -> Some(CurrentTimeResult opId)
+        | WriteLog _ -> None
+
+    let private operationInput operation =
+        match operation with
+        | CallActivity(_, _, input) -> Some input
+        | AwaitEvent _
+        | ReadCurrentTime _
+        | WriteLog _ -> None
+
+    let private expressionOpId expression =
+        match expression with
+        | Literal _ -> None
+        | ActivityResult opId
+        | EventResult opId
+        | CurrentTimeResult opId -> Some opId
+
+    let private validateExpression allOutputs availableOutputs consumer expression =
+        match expression, expressionOpId expression with
+        | Literal _, _ -> []
+        | _, None -> []
+        | _, Some _ when List.contains expression availableOutputs -> []
+        | _, Some source when List.contains expression allOutputs -> [ FutureValueSource(source, consumer) ]
+        | _, Some source -> [ MissingValueSource source ]
+
+    let validate (program: DurableIr) =
+        let allOutputs = program.Operations |> List.choose operationOutput
+
+        let rec loop expected seen availableOutputs issues operations =
+            match operations with
+            | [] ->
+                let returnIssues =
+                    validateExpression allOutputs availableOutputs (OpId expected) program.Return
+
+                issues @ returnIssues
+            | operation :: rest ->
+                let opId = operationId operation
+                let expectedOpId = OpId expected
+
+                let sequenceIssues =
+                    let continuityIssues =
+                        if opId <> expectedOpId then
+                            [ NonContiguousOperationId(expectedOpId, opId) ]
+                        else
+                            []
+
+                    if List.contains opId seen then
+                        continuityIssues @ [ DuplicateOperationId opId ]
+                    else
+                        continuityIssues
+
+                let inputIssues =
+                    match operationInput operation with
+                    | Some input -> validateExpression allOutputs availableOutputs opId input
+                    | None -> []
+
+                let availableOutputs =
+                    match operationOutput operation with
+                    | Some output -> availableOutputs @ [ output ]
+                    | None -> availableOutputs
+
+                loop (expected + 1) (seen @ [ opId ]) availableOutputs (issues @ sequenceIssues @ inputIssues) rest
+
+        loop 0 [] [] [] program.Operations
+
     let private value history expr =
         match expr with
         | Literal value -> Some value
@@ -121,7 +206,7 @@ module DurableIr =
             else
                 Some(Blocked(opId, NeedsLog message))
 
-    let replay history program =
+    let replay history (program: DurableIr) =
         let rec loop operations =
             match operations with
             | [] ->
@@ -134,3 +219,12 @@ module DurableIr =
                 | None -> loop rest
 
         loop program.Operations
+
+[<RequireQualifiedAccess>]
+module DurableWorkflow =
+    let create name (program: DurableIr) : DurableWorkflow = { Name = name; Program = program }
+
+    let validate (workflow: DurableWorkflow) =
+        let nameIssues = if workflow.Name = "" then [ EmptyWorkflowName ] else []
+
+        nameIssues @ DurableIr.validate workflow.Program

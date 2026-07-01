@@ -77,6 +77,7 @@
     <Compile Include="src/Proofs/DurableWorkerLoopProof.fs" />
     <Compile Include="src/Proofs/DurableTypedStatusProof.fs" />
     <Compile Include="src/Proofs/DurableRaceFacadeProof.fs" />
+    <Compile Include="src/Proofs/DurableProductionUsecasesProof.fs" />
     <Compile Include="src/Proofs/Registry.fs" />
     <Compile Include="src/Program.fs" />
   </ItemGroup>

@@ -23,6 +23,8 @@ module WorkflowFlow =
 
     let value text = ValueExpr.literal text
 
+    let input = ValueExpr.workflowInput
+
     let activity name input =
         { Build = fun draft -> DurableIr.appendCallActivity name input draft }
 
@@ -114,6 +116,8 @@ module PortableFiregridSyntax =
     let step name = PortableStep.create name
 
     let value text = WorkflowFlow.value text
+
+    let input = WorkflowFlow.input
 
     let activity name input = WorkflowFlow.activity name input
 

@@ -174,7 +174,7 @@ let notify = step "notify"
 
 let checkout =
     workflow "checkout" {
-        let! reservation = call reserve (value "order-1")
+        let! reservation = call reserve input
 
         let! _ = calls [ charge, reservation; notify, value "order-1" ]
 
@@ -182,12 +182,17 @@ let checkout =
     }
 
 let app = firegrid [ reserve; charge; notify ] [ checkout ]
+
+let plan =
+    DurableIrApp.planWorkflow 123L "checkout" "order-1" History.empty app
 ```
 
 This lowers directly to `DurableIrApp`. It gives application code a CE for
 workflow sequencing without storing continuations in durable runtime state.
 Steps are registered once and workflows call step references, which lets app
-validation catch missing step bindings before the host runs.
+validation catch missing step bindings before the host runs. Workflow input is
+available inside the CE as `input`, so app code can start from request/prompt
+payloads instead of hardcoded literals.
 
 Migration direction:
 

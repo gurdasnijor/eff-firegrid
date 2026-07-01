@@ -38,7 +38,7 @@ let replaySummary () =
 
     let checkout =
         workflow "checkout" {
-            let! reservation = call reserve (value "order-1")
+            let! reservation = call reserve input
 
             let! _ = calls [ charge, reservation; notify, value "order-1" ]
 
@@ -50,7 +50,7 @@ let replaySummary () =
     let history =
         History.empty |> History.append (ActivityCompleted(OpId 0, "reserved:order-1"))
 
-    DurableIrApp.planWorkflow 123L "checkout" history app |> summarizePlan
+    DurableIrApp.planWorkflow 123L "checkout" "order-1" history app |> summarizePlan
 
 [<EntryPoint>]
 let main _ =

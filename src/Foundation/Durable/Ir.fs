@@ -2,6 +2,7 @@ namespace Eff.Foundation.Durable
 
 type ValueExpr =
     | Literal of Value
+    | WorkflowInput
     | ActivityResult of OpId
     | EventResult of OpId
     | CurrentTimeResult of OpId
@@ -80,6 +81,8 @@ type DurableIrAppPlan =
 [<RequireQualifiedAccess>]
 module ValueExpr =
     let literal value = Literal value
+
+    let workflowInput = WorkflowInput
 
     let activityResult opId = ActivityResult opId
 
@@ -215,7 +218,8 @@ module DurableIr =
 
     let private expressionOpId expression =
         match expression with
-        | Literal _ -> None
+        | Literal _
+        | WorkflowInput -> None
         | ActivityResult opId
         | EventResult opId
         | CurrentTimeResult opId -> Some opId
@@ -223,6 +227,7 @@ module DurableIr =
     let private validateExpression allOutputs availableOutputs consumer expression =
         match expression, expressionOpId expression with
         | Literal _, _ -> []
+        | WorkflowInput, _ -> []
         | _, None -> []
         | _, Some _ when List.contains expression availableOutputs -> []
         | _, Some source when List.contains expression allOutputs -> [ FutureValueSource(source, consumer) ]
@@ -283,9 +288,10 @@ module DurableIr =
     let activityNames (program: DurableIr) =
         program.Operations |> List.collect operationActivityNames
 
-    let private value history expr =
+    let private value input history expr =
         match expr with
         | Literal value -> Some value
+        | WorkflowInput -> Some input
         | ActivityResult opId -> History.completed opId history
         | EventResult opId ->
             History.toList history
@@ -295,13 +301,13 @@ module DurableIr =
                 | _ -> None)
         | CurrentTimeResult opId -> History.currentTime opId history |> Option.map string
 
-    let private replayOperation history operation =
+    let private replayOperation workflowInput history operation =
         match operation with
         | IrCallActivity(opId, name, input) ->
             match History.completed opId history with
             | Some _ -> None
             | None ->
-                match value history input with
+                match value workflowInput history input with
                 | Some resolvedInput -> Some(Blocked(opId, NeedsActivity { Name = name; Input = resolvedInput }))
                 | None -> Some(Blocked(opId, NeedsActivity { Name = name; Input = "" }))
         | IrCallActivities calls ->
@@ -311,7 +317,7 @@ module DurableIr =
                     match History.completed call.CallOpId history with
                     | Some _ -> None
                     | None ->
-                        match value history call.CallInput with
+                        match value workflowInput history call.CallInput with
                         | Some resolvedInput ->
                             Some(
                                 call.CallOpId,
@@ -338,15 +344,15 @@ module DurableIr =
             else
                 Some(Blocked(opId, NeedsLog message))
 
-    let replay history (program: DurableIr) =
+    let replay workflowInput history (program: DurableIr) =
         let rec loop operations =
             match operations with
             | [] ->
-                match value history program.Return with
+                match value workflowInput history program.Return with
                 | Some output -> Done output
                 | None -> Done ""
             | operation :: rest ->
-                match replayOperation history operation with
+                match replayOperation workflowInput history operation with
                 | Some blocked -> blocked
                 | None -> loop rest
 
@@ -448,8 +454,8 @@ module DurableIr =
             else
                 logRecords opId message
 
-    let plan timestamp history program =
-        match replay history program with
+    let plan timestamp workflowInput history program =
+        match replay workflowInput history program with
         | Done value -> DurableIrPlanComplete value
         | Blocked(opId, need) ->
             match missingForNeed timestamp history opId need with
@@ -465,9 +471,9 @@ module DurableWorkflow =
 
         nameIssues @ DurableIr.validate workflow.Program
 
-    let replay history workflow =
+    let replay workflowInput history workflow =
         match validate workflow with
-        | [] -> DurableIr.replay history workflow.Program |> ValidWorkflow
+        | [] -> DurableIr.replay workflowInput history workflow.Program |> ValidWorkflow
         | issues -> InvalidWorkflow issues
 
 [<RequireQualifiedAccess>]
@@ -551,19 +557,21 @@ module DurableIrApp =
     let tryFindWorkflow name app =
         app.Workflows |> List.tryFind (fun workflow -> workflow.Name = name)
 
-    let replayWorkflow name history app =
+    let replayWorkflow name workflowInput history app =
         match validate app with
         | [] ->
             match tryFindWorkflow name app with
-            | Some workflow -> DurableWorkflow.replay history workflow |> DurableIrWorkflowReplay
+            | Some workflow -> DurableWorkflow.replay workflowInput history workflow |> DurableIrWorkflowReplay
             | None -> DurableIrWorkflowNotFound name
         | issues -> InvalidDurableIrApp issues
 
-    let planWorkflow timestamp name history app =
+    let planWorkflow timestamp name workflowInput history app =
         match validate app with
         | [] ->
             match tryFindWorkflow name app with
-            | Some workflow -> DurableIr.plan timestamp history workflow.Program |> DurableIrPlanReady
+            | Some workflow ->
+                DurableIr.plan timestamp workflowInput history workflow.Program
+                |> DurableIrPlanReady
             | None -> DurableIrPlanWorkflowNotFound name
         | issues -> InvalidDurableIrAppPlan issues
 

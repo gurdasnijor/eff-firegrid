@@ -7,6 +7,8 @@ module FiregridSurfaceProof =
     type FiregridSurfaceResult =
         { WorkflowCompleted: bool
           AllCompleted: bool
+          BothCompleted: bool
+          ClientResultReadsCompletion: bool
           AppCapturedDescriptors: bool }
 
     module Domain =
@@ -37,9 +39,17 @@ module FiregridSurfaceProof =
             return String.concat "|" greetings
         }
 
+    let private reserveAndHello input =
+        durable {
+            let! reserved, greeting = both (call reserveStep input) (call helloStep input)
+            return reserved + "|" + greeting
+        }
+
     let private checkoutWorkflow = workflow "firegrid-checkout" checkout
 
     let private helloWorkflow = workflow "firegrid-hello-sequence" helloSequence
+
+    let private bothWorkflow = workflow "firegrid-both" reserveAndHello
 
     let private app =
         firegrid {
@@ -48,6 +58,7 @@ module FiregridSurfaceProof =
             step helloStep
             workflow checkoutWorkflow
             workflow helloWorkflow
+            workflow bothWorkflow
         }
 
     let private runWorkload ctx =
@@ -58,45 +69,55 @@ module FiregridSurfaceProof =
             { ProofOperationOptions.empty with
                 Key = Some "firegrid-surface" }
             (async {
-                let! host = DurableTestHost.start ctx (FiregridApp.toDurableApp app)
+                let s2 = WorkloadContext.requireS2 ctx
+                let basinName = "firegrid-surface-" + string (int64 (Reports.nowMillis ()))
+                let! _ = s2.Client |> S2.createBasin basinName
+                let storage = s2.Client |> S2.basin basinName |> Storage.s2
+                let host = Firegrid.testHostWith storage "fg-surface" app
 
-                try
-                    let! workflowCompleted =
-                        DurableTestHost.runUntilCompleted
-                            host
-                            (Workflow.toDurableWorkflow checkoutWorkflow)
-                            "order-1"
-                            "charged:reserved:order-1"
+                let! checkoutOutput = host.run checkoutWorkflow "order-1"
+                let! allOutput = host.run helloWorkflow "Tokyo,Seattle,London"
+                let! bothOutput = host.run bothWorkflow "order-2"
+                let! checkoutStart = host.client.start checkoutWorkflow "order-3"
 
-                    let! allCompleted =
-                        DurableTestHost.runUntilCompleted
-                            host
-                            (Workflow.toDurableWorkflow helloWorkflow)
-                            "Tokyo,Seattle,London"
-                            "Hello, Tokyo|Hello, Seattle|Hello, London"
+                let! clientResultReadsCompletion =
+                    match checkoutStart with
+                    | StartResult.Rejected _ -> async { return false }
+                    | StartResult.Started instanceId ->
+                        async {
+                            do! host.worker.runUntilIdle instanceId
+                            let! result = host.client.result checkoutWorkflow instanceId
+                            return result = Some "charged:reserved:order-3"
+                        }
 
-                    let appCapturedDescriptors =
-                        FiregridApp.stepNames app = [ "firegrid-reserve"; "firegrid-charge"; "firegrid-hello" ]
-                        && FiregridApp.workflowNames app = [ "firegrid-checkout"; "firegrid-hello-sequence" ]
+                let workflowCompleted = checkoutOutput = "charged:reserved:order-1"
+                let allCompleted = allOutput = "Hello, Tokyo|Hello, Seattle|Hello, London"
+                let bothCompleted = bothOutput = "reserved:order-2|Hello, order-2"
 
-                    let result =
-                        { WorkflowCompleted = workflowCompleted
-                          AllCompleted = allCompleted
-                          AppCapturedDescriptors = appCapturedDescriptors }
+                let appCapturedDescriptors =
+                    FiregridApp.stepNames app = [ "firegrid-reserve"; "firegrid-charge"; "firegrid-hello" ]
+                    && FiregridApp.workflowNames app = [ "firegrid-checkout"
+                                                         "firegrid-hello-sequence"
+                                                         "firegrid-both" ]
 
-                    do!
-                        ctx.EmitSpan
-                            "proof.firegrid_surface.completed"
-                            [ "proof.property", "firegrid-surface"
-                              "firegrid.workflow", string result.WorkflowCompleted
-                              "firegrid.all", string result.AllCompleted
-                              "firegrid.descriptors", string result.AppCapturedDescriptors ]
+                let result =
+                    { WorkflowCompleted = workflowCompleted
+                      AllCompleted = allCompleted
+                      BothCompleted = bothCompleted
+                      ClientResultReadsCompletion = clientResultReadsCompletion
+                      AppCapturedDescriptors = appCapturedDescriptors }
 
-                    do! host.cleanup ()
-                    return result
-                with error ->
-                    do! host.cleanup ()
-                    return raise error
+                do!
+                    ctx.EmitSpan
+                        "proof.firegrid_surface.completed"
+                        [ "proof.property", "firegrid-surface"
+                          "firegrid.workflow", string result.WorkflowCompleted
+                          "firegrid.all", string result.AllCompleted
+                          "firegrid.both", string result.BothCompleted
+                          "firegrid.client_result", string result.ClientResultReadsCompletion
+                          "firegrid.descriptors", string result.AppCapturedDescriptors ]
+
+                return result
             })
 
     let surfaceProperty =
@@ -108,6 +129,10 @@ module FiregridSurfaceProof =
                 [ v.Expect.Workload "workflow completes through public Firegrid surface" (fun result ->
                       result.WorkflowCompleted)
                   v.Expect.Workload "durable all completes first-class step calls" (fun result -> result.AllCompleted)
+                  v.Expect.Workload "durable both completes two first-class step calls" (fun result ->
+                      result.BothCompleted)
+                  v.Expect.Workload "public client reads workflow result" (fun result ->
+                      result.ClientResultReadsCompletion)
                   v.Expect.Workload "firegrid app captures step and workflow descriptors" (fun result ->
                       result.AppCapturedDescriptors)
                   v.Trace.SpanExists
@@ -118,7 +143,12 @@ module FiregridSurfaceProof =
                       "firegrid surface operation was recorded"
                       ({ TraceOperationMatch.named "firegrid.surface" with
                           Status = Some "ok"
-                          OutputContains = [ "WorkflowCompleted"; "AllCompleted"; "AppCapturedDescriptors" ]
+                          OutputContains =
+                              [ "WorkflowCompleted"
+                                "AllCompleted"
+                                "BothCompleted"
+                                "ClientResultReadsCompletion"
+                                "AppCapturedDescriptors" ]
                           Count = Some 1 }) ])
         }
 

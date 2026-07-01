@@ -355,12 +355,17 @@ val workflow :
     Workflow<'input, 'output>
 
 val call : Step<'input, 'output> -> 'input -> Durable<'output>
-val send : Step<'input, 'output> -> 'input -> Durable<InvocationId>
 val all : Durable<'a> seq -> Durable<'a list>
-val all2 : Durable<'a> -> Durable<'b> -> Durable<'a * 'b>
+val both : Durable<'a> -> Durable<'b> -> Durable<'a * 'b>
+val waitFor<'payload> : name: string -> Durable<'payload>
+```
+
+Near-follow-up surface:
+
+```fsharp
+val send : Step<'input, 'output> -> 'input -> Durable<InvocationId>
 val race : Durable<'a> seq -> Durable<'a>
 val timeout : deadline: Duration -> Durable<'a> -> Durable<TimeoutResult<'a>>
-val waitFor<'payload> : name: string -> Durable<'payload>
 ```
 
 Example registration:
@@ -659,8 +664,9 @@ Deliver:
 - `Step<'input,'output>`
 - `step` / `stepWith`
 - `Durable<'output>` and `durable {}` CE
-- `call`, `send`, `all`, `all2`, `race`, `waitFor`
+- `call`, `all`, `both`, `waitFor`
 - `Workflow<'input,'output>` and `workflow`
+- `Firegrid.clientWith`, `workerWith`, and `testHostWith`
 - examples ported from the Mikhail workflow article shape
 - public surface tests for first-class typed steps
 

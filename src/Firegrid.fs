@@ -23,6 +23,21 @@ type FiregridApp =
           Steps: string list
           Workflows: string list }
 
+type Storage = private { Inner: DurableStorage }
+
+[<RequireQualifiedAccess>]
+type StartResult =
+    | Started of InstanceId
+    | Rejected of string
+
+[<RequireQualifiedAccess>]
+type WorkflowStatus<'output> =
+    | NotFound
+    | Running
+    | Waiting of string
+    | Completed of 'output
+    | Failed of string
+
 module private DurableProgram =
     let rec toProgram =
         function
@@ -41,6 +56,20 @@ module private DurableProgram =
         |> Program
 
     let map mapper operation = bind (mapper >> result) operation
+
+module private Status =
+    let startResult =
+        function
+        | DurableAppStartResult.Started instanceId -> StartResult.Started instanceId
+        | DurableAppStartResult.Rejected failure -> StartResult.Rejected(string failure)
+
+    let workflowStatus =
+        function
+        | DurableAppTypedWorkflowStatus.NotFound -> WorkflowStatus.NotFound
+        | DurableAppTypedWorkflowStatus.Running -> WorkflowStatus.Running
+        | DurableAppTypedWorkflowStatus.Waiting need -> WorkflowStatus.Waiting(string need)
+        | DurableAppTypedWorkflowStatus.Completed output -> WorkflowStatus.Completed output
+        | DurableAppTypedWorkflowStatus.Failed failure -> WorkflowStatus.Failed(string failure)
 
 type DurableBuilder() =
     member _.Return value = DurableProgram.result value
@@ -103,6 +132,106 @@ module FiregridApp =
     let stepNames app = app.Steps
 
     let workflowNames app = app.Workflows
+
+[<RequireQualifiedAccess>]
+module Storage =
+    let s2 basin = { Inner = DurableStorage.s2 basin }
+
+    let environment environment basinName =
+        { Inner = DurableAppEnvironment.storage environment basinName }
+
+type Client internal (inner: DurableAppClient) =
+    member _.start (workflow: Workflow<'input, 'output>) (input: 'input) =
+        async {
+            let! result = inner.start (Workflow.toDurableWorkflow workflow) input
+            return Status.startResult result
+        }
+
+    member _.startWith instanceId (workflow: Workflow<'input, 'output>) (input: 'input) =
+        async {
+            let! result = inner.startWith instanceId (Workflow.toDurableWorkflow workflow) input
+            return Status.startResult result
+        }
+
+    member _.status (workflow: Workflow<'input, 'output>) instanceId =
+        async {
+            let! status = inner.statusOf (Workflow.toDurableWorkflow workflow) instanceId
+            return Status.workflowStatus status
+        }
+
+    member this.result workflow instanceId =
+        async {
+            let! status = this.status workflow instanceId
+
+            return
+                match status with
+                | WorkflowStatus.Completed output -> Some output
+                | _ -> None
+        }
+
+type Worker internal (inner: DurableAppWorker) =
+    member _.runUntilIdle instanceId =
+        async {
+            let! _ = inner.runUntilIdle instanceId
+            return ()
+        }
+
+    member _.runReady() =
+        async {
+            let! pass = inner.runReady ()
+            return pass.ActiveInstances
+        }
+
+type TestHost internal (client: Client, worker: Worker) =
+    member _.client = client
+
+    member _.worker = worker
+
+    member _.startAndRun (workflow: Workflow<'input, 'output>) (input: 'input) =
+        async {
+            let! start = client.start workflow input
+
+            match start with
+            | StartResult.Rejected error -> return failwith ("workflow start rejected: " + error)
+            | StartResult.Started instanceId ->
+                do! worker.runUntilIdle instanceId
+                let! status = client.status workflow instanceId
+                return instanceId, status
+        }
+
+    member this.run (workflow: Workflow<'input, 'output>) (input: 'input) =
+        async {
+            let! _, status = this.startAndRun workflow input
+
+            match status with
+            | WorkflowStatus.Completed output -> return output
+            | WorkflowStatus.NotFound -> return failwith "workflow did not complete: not found"
+            | WorkflowStatus.Running -> return failwith "workflow did not complete: still running"
+            | WorkflowStatus.Waiting need -> return failwith ("workflow did not complete: waiting for " + need)
+            | WorkflowStatus.Failed error -> return failwith ("workflow failed: " + error)
+        }
+
+[<RequireQualifiedAccess>]
+module Firegrid =
+    let clientWith storage app =
+        app
+        |> FiregridApp.toDurableApp
+        |> DurableApp.clientWith ({ Storage = storage.Inner }: DurableAppClientConfig)
+        |> Client
+
+    let workerWith storage hostId app =
+        app
+        |> FiregridApp.toDurableApp
+        |> DurableApp.workerWith (
+            { Storage = storage.Inner
+              HostId = hostId
+              MaxRunUntilIdleTicks = Some 100 }
+            : DurableAppWorkerConfig
+        )
+        |> Worker
+
+    let testHostWith storage hostId app =
+        TestHost(clientWith storage app, workerWith storage hostId app)
 
 type FiregridBuilder() =
     member _.Yield(()) = FiregridApp.empty
@@ -171,12 +300,20 @@ module Syntax =
                 (DurableProgram.result [], operations |> List.rev)
                 ||> List.fold (fun tail operation -> DurableProgram.bind (fun value -> cons value tail) operation)
 
-    let all2 left right =
-        durable {
-            let! leftValue = left
-            let! rightValue = right
-            return leftValue, rightValue
-        }
+    let both left right =
+        match left, right with
+        | StepCall(leftActivity, leftDecode), StepCall(rightActivity, rightDecode) ->
+            Eff.Foundation.Durable.Workflow.all [ leftActivity; rightActivity ]
+            |> Eff.Foundation.Durable.Durable.map (function
+                | [ leftPayload; rightPayload ] -> leftDecode leftPayload, rightDecode rightPayload
+                | _ -> failwith "both expected exactly two results")
+            |> Program
+        | _ ->
+            durable {
+                let! leftValue = left
+                let! rightValue = right
+                return leftValue, rightValue
+            }
 
     let waitFor name =
         Eff.Foundation.Durable.Workflow.waitForSignal name |> Program

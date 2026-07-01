@@ -155,6 +155,12 @@ stepper remains useful for the current runtime, but the Rust-targeted path needs
 a portable command plan that compiles without S2 substrate modules or JS
 interop.
 
+`DurableIrCommitCodec.encode` provides the first portable record encoding for
+that plan. Records are tagged as incoming history (`in|...`) or outgoing host
+commands (`out|...`) with length-prefixed fields. This keeps payload contents
+delimiter-safe while remaining simple enough for the Rust host to decode
+directly.
+
 Migration direction:
 
 - keep the existing `durable {}` CE working on .NET/Fable JS while the runtime

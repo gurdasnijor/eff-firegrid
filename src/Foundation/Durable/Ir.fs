@@ -511,3 +511,39 @@ module DurableIrApp =
             | Some workflow -> DurableIr.plan timestamp history workflow.Program |> DurableIrPlanReady
             | None -> DurableIrPlanWorkflowNotFound name
         | issues -> InvalidDurableIrAppPlan issues
+
+[<RequireQualifiedAccess>]
+module DurableIrCommitCodec =
+    let private opText (OpId value) = string value
+
+    let private field (value: string) = string value.Length + ":" + value
+
+    let private fields values =
+        values |> List.map field |> String.concat ""
+
+    let private prefixed prefix values = prefix + "|" + fields values
+
+    let private eventRecord event =
+        match event with
+        | ActivityCalled(opId, activity) ->
+            prefixed "event.activity-called" [ opText opId; activity.Name; activity.Input ]
+        | ActivityCompleted(opId, value) -> prefixed "event.activity-completed" [ opText opId; value ]
+        | CurrentTimeRecorded(opId, timestamp) -> prefixed "event.current-time" [ opText opId; string timestamp ]
+        | LogEmitted(opId, message) -> prefixed "event.log" [ opText opId; message ]
+        | TimerCreated(opId, deadline) -> prefixed "event.timer-created" [ opText opId; string deadline ]
+        | TimerFired opId -> prefixed "event.timer-fired" [ opText opId ]
+        | TimerCanceled opId -> prefixed "event.timer-canceled" [ opText opId ]
+        | SignalReceived(opId, name, payload) -> prefixed "event.signal" [ opText opId; name; payload ]
+
+    let private commandRecord command =
+        match command with
+        | DurableIrCommandCallActivity(opId, activity) ->
+            prefixed "command.activity" [ opText opId; activity.Name; activity.Input ]
+        | DurableIrCommandScheduleTimer(opId, deadline) -> prefixed "command.timer" [ opText opId; string deadline ]
+        | DurableIrCommandCancelTimer opId -> prefixed "command.cancel-timer" [ opText opId ]
+        | DurableIrCommandWriteLog(opId, message) -> prefixed "command.log" [ opText opId; message ]
+
+    let encode record =
+        match record with
+        | DurableIrCommitHistory event -> "in|" + eventRecord event
+        | DurableIrCommitCommand command -> "out|" + commandRecord command

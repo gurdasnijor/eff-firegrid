@@ -2,11 +2,9 @@ module FiregridRust.Program
 
 open Eff.Foundation.Durable
 
-let isActivityCommand name input record =
-    match record with
-    | DurableIrCommitCommand(DurableIrCommandCallActivity(_, activity)) ->
-        activity.Name = name && activity.Input = input
-    | _ -> false
+let activityCommand opId name input =
+    DurableIrCommitCommand(DurableIrCommandCallActivity(opId, { Name = name; Input = input }))
+    |> DurableIrCommitCodec.encode
 
 let summarizePlan plan =
     match plan with
@@ -17,13 +15,18 @@ let summarizePlan plan =
         | DurableIrPlanComplete _ -> "complete"
         | DurableIrPlanWaiting _ -> "waiting"
         | DurableIrPlanCommit records ->
-            let hasCharge =
-                records |> List.exists (isActivityCommand "charge" "reserved:order-1")
+            let encoded = records |> List.map DurableIrCommitCodec.encode
 
-            let hasNotify = records |> List.exists (isActivityCommand "notify" "order-1")
+            let chargeCommand = activityCommand (OpId 1) "charge" "reserved:order-1"
+
+            let notifyCommand = activityCommand (OpId 2) "notify" "order-1"
+
+            let hasCharge = encoded |> List.contains chargeCommand
+
+            let hasNotify = encoded |> List.contains notifyCommand
 
             if records.Length = 4 && hasCharge && hasNotify then
-                "commit:grouped-activities"
+                "encoded:grouped-activities"
             else
                 "commit:other"
 

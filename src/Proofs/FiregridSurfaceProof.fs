@@ -9,6 +9,7 @@ module FiregridSurfaceProof =
           AllCompleted: bool
           BothCompleted: bool
           ClientResultReadsCompletion: bool
+          SignalCompletesWorkflow: bool
           AppCapturedDescriptors: bool }
 
     module Domain =
@@ -24,6 +25,8 @@ module FiregridSurfaceProof =
     let private chargeStep = step "firegrid-charge" Domain.charge
 
     let private helloStep = step "firegrid-hello" Domain.hello
+
+    let private approvedSignal = signal "firegrid-approved"
 
     let private checkout orderId =
         durable {
@@ -45,11 +48,19 @@ module FiregridSurfaceProof =
             return reserved + "|" + greeting
         }
 
+    let private approval orderId =
+        durable {
+            let! approver = waitForSignal approvedSignal
+            return orderId + ":approved-by:" + approver
+        }
+
     let private checkoutWorkflow = workflow "firegrid-checkout" checkout
 
     let private helloWorkflow = workflow "firegrid-hello-sequence" helloSequence
 
     let private bothWorkflow = workflow "firegrid-both" reserveAndHello
+
+    let private approvalWorkflow = workflow "firegrid-approval" approval
 
     let private app =
         firegrid {
@@ -59,6 +70,7 @@ module FiregridSurfaceProof =
             workflow checkoutWorkflow
             workflow helloWorkflow
             workflow bothWorkflow
+            workflow approvalWorkflow
         }
 
     let private runWorkload ctx =
@@ -79,6 +91,7 @@ module FiregridSurfaceProof =
                 let! allOutput = host.run helloWorkflow "Tokyo,Seattle,London"
                 let! bothOutput = host.run bothWorkflow "order-2"
                 let! checkoutStart = host.client.start checkoutWorkflow "order-3"
+                let! approvalStart = host.client.start approvalWorkflow "order-4"
 
                 let! clientResultReadsCompletion =
                     match checkoutStart with
@@ -90,6 +103,18 @@ module FiregridSurfaceProof =
                             return result = Some "charged:reserved:order-3"
                         }
 
+                let! signalCompletesWorkflow =
+                    match approvalStart with
+                    | StartResult.Rejected _ -> async { return false }
+                    | StartResult.Started instanceId ->
+                        async {
+                            do! host.worker.runUntilIdle instanceId
+                            let! signalResult = host.client.signal instanceId approvedSignal "alice"
+                            do! host.worker.runUntilIdle instanceId
+                            let! result = host.client.result approvalWorkflow instanceId
+                            return signalResult = Ok() && result = Some "order-4:approved-by:alice"
+                        }
+
                 let workflowCompleted = checkoutOutput = "charged:reserved:order-1"
                 let allCompleted = allOutput = "Hello, Tokyo|Hello, Seattle|Hello, London"
                 let bothCompleted = bothOutput = "reserved:order-2|Hello, order-2"
@@ -98,13 +123,15 @@ module FiregridSurfaceProof =
                     FiregridApp.stepNames app = [ "firegrid-reserve"; "firegrid-charge"; "firegrid-hello" ]
                     && FiregridApp.workflowNames app = [ "firegrid-checkout"
                                                          "firegrid-hello-sequence"
-                                                         "firegrid-both" ]
+                                                         "firegrid-both"
+                                                         "firegrid-approval" ]
 
                 let result =
                     { WorkflowCompleted = workflowCompleted
                       AllCompleted = allCompleted
                       BothCompleted = bothCompleted
                       ClientResultReadsCompletion = clientResultReadsCompletion
+                      SignalCompletesWorkflow = signalCompletesWorkflow
                       AppCapturedDescriptors = appCapturedDescriptors }
 
                 do!
@@ -115,6 +142,7 @@ module FiregridSurfaceProof =
                           "firegrid.all", string result.AllCompleted
                           "firegrid.both", string result.BothCompleted
                           "firegrid.client_result", string result.ClientResultReadsCompletion
+                          "firegrid.signal", string result.SignalCompletesWorkflow
                           "firegrid.descriptors", string result.AppCapturedDescriptors ]
 
                 return result
@@ -133,6 +161,8 @@ module FiregridSurfaceProof =
                       result.BothCompleted)
                   v.Expect.Workload "public client reads workflow result" (fun result ->
                       result.ClientResultReadsCompletion)
+                  v.Expect.Workload "public client signal completes waiting workflow" (fun result ->
+                      result.SignalCompletesWorkflow)
                   v.Expect.Workload "firegrid app captures step and workflow descriptors" (fun result ->
                       result.AppCapturedDescriptors)
                   v.Trace.SpanExists
@@ -148,6 +178,7 @@ module FiregridSurfaceProof =
                                 "AllCompleted"
                                 "BothCompleted"
                                 "ClientResultReadsCompletion"
+                                "SignalCompletesWorkflow"
                                 "AppCapturedDescriptors" ]
                           Count = Some 1 }) ])
         }

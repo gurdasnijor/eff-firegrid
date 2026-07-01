@@ -358,6 +358,13 @@ val call : Step<'input, 'output> -> 'input -> Durable<'output>
 val all : Durable<'a> seq -> Durable<'a list>
 val both : Durable<'a> -> Durable<'b> -> Durable<'a * 'b>
 val waitFor<'payload> : name: string -> Durable<'payload>
+val signal : name: string -> Signal<string>
+val signalWith :
+    name: string ->
+    encode: ('payload -> string) ->
+    decode: (string -> 'payload) ->
+    Signal<'payload>
+val waitForSignal : Signal<'payload> -> Durable<'payload>
 ```
 
 Near-follow-up surface:
@@ -664,7 +671,7 @@ Deliver:
 - `Step<'input,'output>`
 - `step` / `stepWith`
 - `Durable<'output>` and `durable {}` CE
-- `call`, `all`, `both`, `waitFor`
+- `call`, `all`, `both`, `waitFor`, `signal`, `waitForSignal`
 - `Workflow<'input,'output>` and `workflow`
 - `Firegrid.clientWith`, `workerWith`, and `testHostWith`
 - examples ported from the Mikhail workflow article shape

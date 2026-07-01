@@ -40,6 +40,8 @@ let chargeStep = step "charge" Domain.charge
 
 let greetStep = step "greet" Domain.greet
 
+let approved = signal "approved"
+
 let checkout orderId =
     durable {
         let! reservation = call reserveStep orderId
@@ -60,11 +62,19 @@ let reserveAndGreet orderId =
         return reservation + " / " + greeting
     }
 
+let approval orderId =
+    durable {
+        let! approver = waitForSignal approved
+        return orderId + ":approved-by:" + approver
+    }
+
 let checkoutWorkflow = workflow "checkout" checkout
 
 let helloWorkflow = workflow "hello-sequence" helloSequence
 
 let reserveAndGreetWorkflow = workflow "reserve-and-greet" reserveAndGreet
+
+let approvalWorkflow = workflow "approval" approval
 
 let app =
     firegrid {
@@ -74,6 +84,7 @@ let app =
         workflow checkoutWorkflow
         workflow helloWorkflow
         workflow reserveAndGreetWorkflow
+        workflow approvalWorkflow
     }
 
 let stepNames = FiregridApp.stepNames app

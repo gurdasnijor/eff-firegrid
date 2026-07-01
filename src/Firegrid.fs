@@ -12,6 +12,10 @@ type Workflow<'input, 'output> =
     internal
         { Workflow: Eff.Foundation.Durable.App.Workflow<'input, 'output> }
 
+type Signal<'payload> =
+    internal
+        { Signal: Eff.Foundation.Durable.App.Signal<'payload> }
+
 type Durable<'output> =
     internal
     | Program of Eff.Foundation.Durable.Durable<'output>
@@ -111,6 +115,15 @@ module Workflow =
     let toDurableWorkflow workflow = workflow.Workflow
 
 [<RequireQualifiedAccess>]
+module Signal =
+    let defineWith name encode decode : Signal<'payload> =
+        { Signal = Eff.Foundation.Durable.App.Signal.defineWith name encode decode }
+
+    let define name : Signal<string> = defineWith name id id
+
+    let toDurableSignal signal = signal.Signal
+
+[<RequireQualifiedAccess>]
 module FiregridApp =
     let empty =
         { App = DurableApp.empty
@@ -167,6 +180,16 @@ type Client internal (inner: DurableAppClient) =
                 match status with
                 | WorkflowStatus.Completed output -> Some output
                 | _ -> None
+        }
+
+    member _.signal instanceId (signal: Signal<'payload>) (payload: 'payload) =
+        async {
+            let! result = inner.signal instanceId (Signal.toDurableSignal signal) payload
+
+            return
+                match result with
+                | DurableAppSignalResult.Accepted -> Ok()
+                | DurableAppSignalResult.Rejected failure -> Error(string failure)
         }
 
 type Worker internal (inner: DurableAppWorker) =
@@ -264,6 +287,10 @@ module Syntax =
     let workflowWith name encodeInput decodeInput encodeOutput decodeOutput factory =
         Workflow.defineWith name encodeInput decodeInput encodeOutput decodeOutput factory
 
+    let signal name = Signal.define name
+
+    let signalWith name encode decode = Signal.defineWith name encode decode
+
     let call (step: Step<'input, 'output>) input =
         let activity =
             Eff.Foundation.Durable.Activities.create
@@ -320,3 +347,7 @@ module Syntax =
 
     let waitForWith name decode =
         waitFor name |> DurableProgram.map decode
+
+    let waitForSignal signal =
+        Eff.Foundation.Durable.App.Durable.waitForSignal (Signal.toDurableSignal signal)
+        |> Program

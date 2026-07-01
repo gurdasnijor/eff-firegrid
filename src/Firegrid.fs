@@ -34,6 +34,11 @@ type FiregridApp =
 
 type Storage = private { Inner: DurableStorage }
 
+type LocalStepExecution =
+    { Name: string
+      Input: string
+      Output: string }
+
 [<RequireQualifiedAccess>]
 type StartResult =
     | Started of InstanceId
@@ -46,6 +51,10 @@ type WorkflowStatus<'output> =
     | Waiting of string
     | Completed of 'output
     | Failed of string
+
+type LocalWorkflowRun<'output> =
+    { Status: WorkflowStatus<'output>
+      Steps: LocalStepExecution list }
 
 module private DurableProgram =
     let rec toProgram =
@@ -204,9 +213,9 @@ module FiregridApp =
 
     let toDurableApp app = app.App
 
-    let stepNames app = app.Steps
+    let stepNames (app: FiregridApp) = app.Steps
 
-    let workflowNames app = app.Workflows
+    let workflowNames (app: FiregridApp) = app.Workflows
 
 [<RequireQualifiedAccess>]
 module Storage =
@@ -341,18 +350,30 @@ type LocalTestHost internal (app: FiregridApp) =
                     return Error("local step failed: " + activity.Name + ": " + error.Message)
         }
 
-    let rec advance history program =
+    let rec advance history trace program =
         async {
             match Eff.Foundation.Durable.Durable.replay history program with
-            | Done output -> return WorkflowStatus.Completed output
+            | Done output ->
+                return
+                    { Status = WorkflowStatus.Completed output
+                      Steps = List.rev trace }
             | Blocked(opId, NeedsActivity activity) ->
                 let! result = runActivity activity
 
                 match result with
                 | Ok output ->
                     let history = History.append (ActivityCompleted(opId, output)) history
-                    return! advance history program
-                | Error error -> return WorkflowStatus.Failed error
+
+                    let execution =
+                        { Name = activity.Name
+                          Input = activity.Input
+                          Output = output }
+
+                    return! advance history (execution :: trace) program
+                | Error error ->
+                    return
+                        { Status = WorkflowStatus.Failed error
+                          Steps = List.rev trace }
             | Blocked(_, NeedsActivities activities) ->
                 let! results =
                     activities
@@ -370,7 +391,10 @@ type LocalTestHost internal (app: FiregridApp) =
                         | Ok _ -> None
                         | Error error -> Some error)
                 with
-                | Some error -> return WorkflowStatus.Failed error
+                | Some error ->
+                    return
+                        { Status = WorkflowStatus.Failed error
+                          Steps = List.rev trace }
                 | None ->
                     let history =
                         (history, results)
@@ -379,50 +403,79 @@ type LocalTestHost internal (app: FiregridApp) =
                             | Ok output -> History.append (ActivityCompleted(opId, output)) history
                             | Error _ -> history)
 
-                    return! advance history program
+                    let executions =
+                        (activities, results |> Array.toList)
+                        ||> List.zip
+                        |> List.map (fun ((_, activity), (_, result)) ->
+                            match result with
+                            | Ok output ->
+                                { Name = activity.Name
+                                  Input = activity.Input
+                                  Output = output }
+                            | Error error ->
+                                { Name = activity.Name
+                                  Input = activity.Input
+                                  Output = error })
+
+                    return! advance history (List.rev executions @ trace) program
             | Blocked(opId, NeedsCurrentTime) ->
                 let history =
                     History.append (CurrentTimeRecorded(opId, Local.currentTimeMillis ())) history
 
-                return! advance history program
+                return! advance history trace program
             | Blocked(opId, NeedsLog message) ->
                 let history = History.append (LogEmitted(opId, message)) history
-                return! advance history program
+                return! advance history trace program
             | Blocked(_, NeedsTimerCancellation timers) ->
                 let history =
                     (history, timers)
                     ||> List.fold (fun history opId -> History.append (TimerCanceled opId) history)
 
-                return! advance history program
-            | Blocked(_, need) -> return WorkflowStatus.Waiting(Local.waitingOn need)
+                return! advance history trace program
+            | Blocked(_, need) ->
+                return
+                    { Status = WorkflowStatus.Waiting(Local.waitingOn need)
+                      Steps = List.rev trace }
         }
 
-    member _.tryRun (workflow: Workflow<'input, 'output>) (input: 'input) =
+    member _.inspect (workflow: Workflow<'input, 'output>) (input: 'input) =
         async {
             if not (workflowIsRegistered workflow) then
                 return
-                    WorkflowStatus.Failed(
-                        "workflow is not registered in this app: "
-                        + WorkflowName.value workflow.Workflow.Name
-                    )
+                    { Status =
+                        WorkflowStatus.Failed(
+                            "workflow is not registered in this app: "
+                            + WorkflowName.value workflow.Workflow.Name
+                        )
+                      Steps = [] }
             else
                 try
                     let program =
                         workflow.Workflow.Factory input
                         |> Eff.Foundation.Durable.Durable.map workflow.Workflow.EncodeOutput
 
-                    let! status = advance History.empty program
+                    let! run = advance History.empty [] program
 
                     return
-                        match status with
-                        | WorkflowStatus.Completed payload ->
-                            WorkflowStatus.Completed(workflow.Workflow.DecodeOutput payload)
-                        | WorkflowStatus.NotFound -> WorkflowStatus.NotFound
-                        | WorkflowStatus.Running -> WorkflowStatus.Running
-                        | WorkflowStatus.Waiting need -> WorkflowStatus.Waiting need
-                        | WorkflowStatus.Failed error -> WorkflowStatus.Failed error
+                        { Status =
+                            match run.Status with
+                            | WorkflowStatus.Completed payload ->
+                                WorkflowStatus.Completed(workflow.Workflow.DecodeOutput payload)
+                            | WorkflowStatus.NotFound -> WorkflowStatus.NotFound
+                            | WorkflowStatus.Running -> WorkflowStatus.Running
+                            | WorkflowStatus.Waiting need -> WorkflowStatus.Waiting need
+                            | WorkflowStatus.Failed error -> WorkflowStatus.Failed error
+                          Steps = run.Steps }
                 with error ->
-                    return WorkflowStatus.Failed error.Message
+                    return
+                        { Status = WorkflowStatus.Failed error.Message
+                          Steps = [] }
+        }
+
+    member this.tryRun workflow input =
+        async {
+            let! run = this.inspect workflow input
+            return run.Status
         }
 
     member this.run workflow input =

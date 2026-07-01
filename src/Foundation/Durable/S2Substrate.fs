@@ -98,13 +98,18 @@ module S2Substrate =
     let readInbox from count (owned: OwnedKey) =
         async {
             try
-                return!
-                    owned.Inbox
-                    |> S2.readWith
-                        { S2.ReadOptions.empty with
-                            Start = Some(S2.FromSeqNum from)
-                            Count = Some count
-                            Clamp = true }
+                let! tail = owned.Inbox |> S2.checkTail
+
+                if from >= tail.SeqNum then
+                    return []
+                else
+                    return!
+                        owned.Inbox
+                        |> S2.readWith
+                            { S2.ReadOptions.empty with
+                                Start = Some(S2.FromSeqNum from)
+                                Count = Some count
+                                Clamp = true }
             with error ->
                 match S2Errors.classify error with
                 | S2Errors.RangeNotSatisfiable _ -> return []
@@ -138,14 +143,19 @@ module S2Substrate =
             let! records =
                 async {
                     try
-                        return!
-                            owned.Log
-                            |> S2.readWith
-                                { S2.ReadOptions.empty with
-                                    Start = Some(S2.FromSeqNum from)
-                                    Count = Some count
-                                    Clamp = true
-                                    IgnoreCommandRecords = true }
+                        let! tail = owned.Log |> S2.checkTail
+
+                        if from >= tail.SeqNum then
+                            return []
+                        else
+                            return!
+                                owned.Log
+                                |> S2.readWith
+                                    { S2.ReadOptions.empty with
+                                        Start = Some(S2.FromSeqNum from)
+                                        Count = Some count
+                                        Clamp = true
+                                        IgnoreCommandRecords = true }
                     with error ->
                         match S2Errors.classify error with
                         | S2Errors.RangeNotSatisfiable _ -> return []

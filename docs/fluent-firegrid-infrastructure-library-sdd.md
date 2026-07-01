@@ -583,6 +583,16 @@ let! result =
 Expect.equal expected result
 ```
 
+When tests need evidence, use the detailed local run:
+
+```fsharp
+let! run =
+    host.inspect fulfillment wishlist
+
+Expect.equal (WorkflowStatus.Completed expected) run.Status
+Expect.equal [ "FindMatchingGift"; "PickGift"; "Reserve" ] (run.Steps |> List.map (fun step -> step.Name))
+```
+
 Local tests can also assert that a workflow has reached an external wait
 without needing a worker, stream, basin, or runtime:
 
@@ -712,7 +722,7 @@ Acceptance:
 Deliver:
 
 - broaden `Firegrid.localTestHost app`
-- `host.run workflow input` and `host.tryRun workflow input`
+- `host.run workflow input`, `host.tryRun workflow input`, and `host.inspect workflow input`
 - trace/assertion APIs for public durable behavior
 - replay assertions that steps execute once
 - migration of relevant `.fsx` proof examples to public test-host tests

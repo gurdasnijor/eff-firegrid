@@ -102,9 +102,11 @@ let localHost = Firegrid.localTestHost app
 let localPreview =
     async {
         let! receipt = localHost.run checkoutWorkflow "order-123"
+        let! run = localHost.inspect checkoutWorkflow "order-124"
         let! approvalStatus = localHost.tryRun approvalWorkflow "order-124"
 
         printfn "local checkout: %s" receipt
+        printfn "local checkout steps: %A" (run.Steps |> List.map (fun step -> step.Name))
         printfn "local approval status: %A" approvalStatus
     }
 

@@ -108,5 +108,8 @@ let localPreview =
         printfn "local approval status: %A" approvalStatus
     }
 
+let serveFromEnvironment =
+    Firegrid.serveWith (ServeConfig.environment "dev" "tutorial") app
+
 printfn "steps: %A" stepNames
 printfn "workflows: %A" workflowNames

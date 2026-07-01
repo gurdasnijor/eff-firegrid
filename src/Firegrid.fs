@@ -34,6 +34,12 @@ type FiregridApp =
 
 type Storage = private { Inner: DurableStorage }
 
+type ServeConfig =
+    { Storage: Storage
+      HostId: string
+      MaxRunUntilIdleTicks: int option
+      CancellationToken: System.Threading.CancellationToken option }
+
 [<RequireQualifiedAccess>]
 type StartResult =
     | Started of InstanceId
@@ -215,6 +221,17 @@ module Storage =
     let environment environment basinName =
         { Inner = DurableAppEnvironment.storage environment basinName }
 
+[<RequireQualifiedAccess>]
+module ServeConfig =
+    let create storage hostId =
+        { Storage = storage
+          HostId = hostId
+          MaxRunUntilIdleTicks = None
+          CancellationToken = None }
+
+    let environment environment hostId =
+        create (Storage.environment environment None) hostId
+
 type Client internal (inner: DurableAppClient) =
     member _.start (workflow: Workflow<'input, 'output>) (input: 'input) =
         async {
@@ -266,6 +283,8 @@ type Worker internal (inner: DurableAppWorker) =
             let! pass = inner.runReady ()
             return pass.ActiveInstances
         }
+
+    member _.runForever cancellationToken = inner.runForever cancellationToken
 
 type TestHost internal (client: Client, worker: Worker) =
     member _.client = client
@@ -460,6 +479,28 @@ module Firegrid =
         TestHost(clientWith storage app, workerWith storage hostId app)
 
     let localTestHost app = LocalTestHost app
+
+    let serveWith config app =
+        async {
+            let worker =
+                app
+                |> FiregridApp.toDurableApp
+                |> DurableApp.workerWith (
+                    { Storage = config.Storage.Inner
+                      HostId = config.HostId
+                      MaxRunUntilIdleTicks = config.MaxRunUntilIdleTicks }
+                    : DurableAppWorkerConfig
+                )
+
+            let cancellationToken =
+                config.CancellationToken
+                |> Option.defaultValue System.Threading.CancellationToken.None
+
+            do! worker.runForever cancellationToken
+        }
+
+    let serve app =
+        serveWith (ServeConfig.environment "dev" "firegrid") app
 
 [<RequireQualifiedAccess>]
 module Durable =

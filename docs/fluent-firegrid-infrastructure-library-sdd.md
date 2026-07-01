@@ -534,11 +534,10 @@ do! Firegrid.serve app
 Explicit host config:
 
 ```fsharp
-do! Firegrid.serve {
-    app app
-    port 9080
-    storage (Storage.s2FromEnv ())
-}
+let config =
+    ServeConfig.create (Storage.environment "dev" None) "home-agent"
+
+do! Firegrid.serveWith config app
 ```
 
 The normal user noun is `serve`, not `worker`. The current client/worker/runtime
@@ -729,12 +728,13 @@ Deliver:
 
 - `firegrid { step ...; workflow ... }`
 - `Firegrid.serve app`
-- local in-memory durable store
+- `ServeConfig.create storage hostId`
+- `Firegrid.serveWith config app`
 - typed client start/result/status for workflows
 
 Acceptance:
 
-- local app can be served with one call
+- app can be served with one call
 - user workflow code is unchanged between test host and local serve
 
 ### PR 4: Entity / Durable Actor Surface

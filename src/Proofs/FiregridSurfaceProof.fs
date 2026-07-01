@@ -11,6 +11,7 @@ module FiregridSurfaceProof =
           ParallelBindCompleted: bool
           LocalHostCompleted: bool
           LocalHostReportedWaiting: bool
+          CliStepCompleted: bool
           ServeCompletesWorkflow: bool
           ClientResultReadsCompletion: bool
           SignalCompletesWorkflow: bool
@@ -29,6 +30,15 @@ module FiregridSurfaceProof =
     let private chargeStep = step "firegrid-charge" Domain.charge
 
     let private helloStep = step "firegrid-hello" Domain.hello
+
+    let private cliEchoStep =
+        cliStep
+            "firegrid-cli-echo"
+            (CliStepConfig.create "node"
+             |> CliStepConfig.withArgs
+                 [ "-e"
+                   "let input = ''; process.stdin.setEncoding('utf8'); process.stdin.on('data', chunk => input += chunk); process.stdin.on('end', () => process.stdout.write('cli:' + input.trim().toUpperCase()));" ]
+             |> CliStepConfig.withTimeoutMillis 5000)
 
     let private approvedSignal = signal "firegrid-approved"
 
@@ -64,6 +74,12 @@ module FiregridSurfaceProof =
             return orderId + ":approved-by:" + approver
         }
 
+    let private cliEcho input =
+        durable {
+            let! output = call cliEchoStep input
+            return output
+        }
+
     let private checkoutWorkflow = workflow "firegrid-checkout" checkout
 
     let private helloWorkflow = workflow "firegrid-hello-sequence" helloSequence
@@ -72,15 +88,19 @@ module FiregridSurfaceProof =
 
     let private approvalWorkflow = workflow "firegrid-approval" approval
 
+    let private cliEchoWorkflow = workflow "firegrid-cli-echo" cliEcho
+
     let private app =
         firegrid {
             step reserveStep
             step chargeStep
             step helloStep
+            step cliEchoStep
             workflow checkoutWorkflow
             workflow helloWorkflow
             workflow parallelBindWorkflow
             workflow approvalWorkflow
+            workflow cliEchoWorkflow
         }
 
     let private deleteInstance basin instanceId =
@@ -115,10 +135,12 @@ module FiregridSurfaceProof =
                 let checkoutClientId = instance "checkout-2"
                 let approvalId = instance "approval"
                 let serveId = instance "serve"
+                let cliId = instance "cli"
 
                 let! checkoutOutput = host.runWith checkoutId checkoutWorkflow "order-1"
                 let! parallelOutput = host.runWith parallelId helloWorkflow "Tokyo,Seattle,London"
                 let! parallelBindOutput = host.runWith parallelBindId parallelBindWorkflow "order-2"
+                let! cliOutput = host.runWith cliId cliEchoWorkflow "hello from process"
                 let! localOutput = localHost.run checkoutWorkflow "local-order"
                 let! localApprovalStatus = localHost.tryRun approvalWorkflow "local-approval"
                 let! checkoutStart = host.client.startWith checkoutClientId checkoutWorkflow "order-3"
@@ -188,6 +210,7 @@ module FiregridSurfaceProof =
                 let parallelCompleted = parallelOutput = "Hello, Tokyo|Hello, Seattle|Hello, London"
                 let parallelBindCompleted = parallelBindOutput = "reserved:order-2|Hello, order-2"
                 let localHostCompleted = localOutput = "charged:reserved:local-order"
+                let cliStepCompleted = cliOutput = "cli:HELLO FROM PROCESS"
 
                 let localHostReportedWaiting =
                     match localApprovalStatus with
@@ -195,13 +218,14 @@ module FiregridSurfaceProof =
                     | _ -> false
 
                 let expectedAppSteps: string list =
-                    [ "firegrid-reserve"; "firegrid-charge"; "firegrid-hello" ]
+                    [ "firegrid-reserve"; "firegrid-charge"; "firegrid-hello"; "firegrid-cli-echo" ]
 
                 let expectedAppWorkflows: string list =
                     [ "firegrid-checkout"
                       "firegrid-hello-sequence"
                       "firegrid-parallel-bind"
-                      "firegrid-approval" ]
+                      "firegrid-approval"
+                      "firegrid-cli-echo" ]
 
                 let appCapturedDescriptors =
                     (FiregridApp.stepNames app = expectedAppSteps)
@@ -213,6 +237,7 @@ module FiregridSurfaceProof =
                       ParallelBindCompleted = parallelBindCompleted
                       LocalHostCompleted = localHostCompleted
                       LocalHostReportedWaiting = localHostReportedWaiting
+                      CliStepCompleted = cliStepCompleted
                       ServeCompletesWorkflow = serveCompletesWorkflow
                       ClientResultReadsCompletion = clientResultReadsCompletion
                       SignalCompletesWorkflow = signalCompletesWorkflow
@@ -227,6 +252,7 @@ module FiregridSurfaceProof =
                           "firegrid.parallel_bind", string result.ParallelBindCompleted
                           "firegrid.local_host", string result.LocalHostCompleted
                           "firegrid.local_waiting", string result.LocalHostReportedWaiting
+                          "firegrid.cli_step", string result.CliStepCompleted
                           "firegrid.serve", string result.ServeCompletesWorkflow
                           "firegrid.client_result", string result.ClientResultReadsCompletion
                           "firegrid.signal", string result.SignalCompletesWorkflow
@@ -238,6 +264,7 @@ module FiregridSurfaceProof =
                 do! deleteInstance basin checkoutClientId
                 do! deleteInstance basin approvalId
                 do! deleteInstance basin serveId
+                do! deleteInstance basin cliId
 
                 return result
             })
@@ -258,6 +285,8 @@ module FiregridSurfaceProof =
                       result.LocalHostCompleted)
                   v.Expect.Workload "local Firegrid test host reports external waits" (fun result ->
                       result.LocalHostReportedWaiting)
+                  v.Expect.Workload "cliStep completes through the public workflow surface" (fun result ->
+                      result.CliStepCompleted)
                   v.Expect.Workload "Firegrid.serveWith completes public workflow" (fun result ->
                       result.ServeCompletesWorkflow)
                   v.Expect.Workload "public client reads workflow result" (fun result ->
@@ -280,6 +309,7 @@ module FiregridSurfaceProof =
                                 "ParallelBindCompleted"
                                 "LocalHostCompleted"
                                 "LocalHostReportedWaiting"
+                                "CliStepCompleted"
                                 "ServeCompletesWorkflow"
                                 "ClientResultReadsCompletion"
                                 "SignalCompletesWorkflow"

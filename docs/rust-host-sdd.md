@@ -166,27 +166,28 @@ directly.
 The first Rust-targetable authoring surface is intentionally small:
 
 ```fsharp
-open Eff.Firegrid
+open Eff.Firegrid.Portable
+
+let reserve = step "reserve"
+let charge = step "charge"
+let notify = step "notify"
 
 let checkout =
     workflow "checkout" {
-        let! reservation = activity "reserve" (value "order-1")
+        let! reservation = call reserve (value "order-1")
 
-        let! _ =
-            activities
-                [ "charge", reservation
-                  "notify", value "order-1" ]
+        let! _ = calls [ charge, reservation; notify, value "order-1" ]
 
         return reservation
     }
 
-let app = firegrid [ checkout ]
+let app = firegrid [ reserve; charge; notify ] [ checkout ]
 ```
 
 This lowers directly to `DurableIrApp`. It gives application code a CE for
-workflow sequencing without storing continuations in durable runtime state. The
-app boundary is a plain list for now because `firegrid [ checkout; other ]` is
-clearer and more Rust-target friendly than an app-level CE.
+workflow sequencing without storing continuations in durable runtime state.
+Steps are registered once and workflows call step references, which lets app
+validation catch missing step bindings before the host runs.
 
 Migration direction:
 

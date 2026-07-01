@@ -28,7 +28,11 @@ type DurableIrDraft =
 
 type DurableWorkflow = { Name: string; Program: DurableIr }
 
-type DurableIrApp = { Workflows: DurableWorkflow list }
+type DurableIrStep = { StepName: string }
+
+type DurableIrApp =
+    { Steps: DurableIrStep list
+      Workflows: DurableWorkflow list }
 
 type DurableIrIssue =
     | EmptyWorkflowName
@@ -39,7 +43,9 @@ type DurableIrIssue =
 
 type DurableIrAppIssue =
     | EmptyDurableIrApp
+    | DuplicateStepName of string
     | DuplicateWorkflowName of string
+    | MissingStepBinding of workflowName: string * stepName: string
     | InvalidWorkflowDescriptor of workflowName: string * issues: DurableIrIssue list
 
 type DurableWorkflowReplay =
@@ -199,6 +205,14 @@ module DurableIr =
         | IrReadCurrentTime _
         | IrWriteLog _ -> []
 
+    let private operationActivityNames operation =
+        match operation with
+        | IrCallActivity(_, name, _) -> [ name ]
+        | IrCallActivities calls -> calls |> List.map (fun call -> call.CallName)
+        | IrAwaitEvent _
+        | IrReadCurrentTime _
+        | IrWriteLog _ -> []
+
     let private expressionOpId expression =
         match expression with
         | Literal _ -> None
@@ -265,6 +279,9 @@ module DurableIr =
                     rest
 
         loop 0 [] [] [] program.Operations
+
+    let activityNames (program: DurableIr) =
+        program.Operations |> List.collect operationActivityNames
 
     let private value history expr =
         match expr with
@@ -454,16 +471,38 @@ module DurableWorkflow =
         | issues -> InvalidWorkflow issues
 
 [<RequireQualifiedAccess>]
-module DurableIrApp =
-    let empty = { Workflows = [] }
+module DurableIrStep =
+    let create name = { StepName = name }
 
-    let create workflows = { Workflows = workflows |> List.ofSeq }
+[<RequireQualifiedAccess>]
+module DurableIrApp =
+    let empty = { Steps = []; Workflows = [] }
+
+    let create steps workflows =
+        { Steps = steps |> List.ofSeq
+          Workflows = workflows |> List.ofSeq }
+
+    let bindStep step app =
+        { app with
+            Steps = app.Steps @ [ step ] }
 
     let bindWorkflow workflow app =
         { app with
             Workflows = app.Workflows @ [ workflow ] }
 
-    let private duplicateNameIssues workflows =
+    let private duplicateStepIssues steps =
+        let rec loop seen issues remaining =
+            match remaining with
+            | [] -> issues
+            | step :: rest ->
+                if List.contains step.StepName seen then
+                    loop seen (issues @ [ DuplicateStepName step.StepName ]) rest
+                else
+                    loop (seen @ [ step.StepName ]) issues rest
+
+        loop [] [] steps
+
+    let private duplicateWorkflowIssues workflows =
         let rec loop seen issues remaining =
             match remaining with
             | [] -> issues
@@ -475,6 +514,19 @@ module DurableIrApp =
 
         loop [] [] workflows
 
+    let private missingStepIssues app =
+        let registered = app.Steps |> List.map (fun step -> step.StepName)
+
+        app.Workflows
+        |> List.collect (fun workflow ->
+            workflow.Program
+            |> DurableIr.activityNames
+            |> List.choose (fun stepName ->
+                if List.contains stepName registered then
+                    None
+                else
+                    Some(MissingStepBinding(workflow.Name, stepName))))
+
     let validate app =
         let appIssues =
             if List.isEmpty app.Workflows then
@@ -482,7 +534,10 @@ module DurableIrApp =
             else
                 []
 
-        let duplicateIssues = duplicateNameIssues app.Workflows
+        let duplicateIssues =
+            duplicateStepIssues app.Steps @ duplicateWorkflowIssues app.Workflows
+
+        let missingSteps = missingStepIssues app
 
         let workflowIssues =
             app.Workflows
@@ -491,7 +546,7 @@ module DurableIrApp =
                 | [] -> []
                 | issues -> [ InvalidWorkflowDescriptor(workflow.Name, issues) ])
 
-        appIssues @ duplicateIssues @ workflowIssues
+        appIssues @ duplicateIssues @ missingSteps @ workflowIssues
 
     let tryFindWorkflow name app =
         app.Workflows |> List.tryFind (fun workflow -> workflow.Name = name)

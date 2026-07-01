@@ -1,10 +1,21 @@
-namespace Eff.Firegrid
+namespace Eff.Firegrid.Portable
 
 open Eff.Foundation.Durable
+
+type PortableStep = private { Definition: DurableIrStep }
 
 type WorkflowFlow<'value> =
     private
         { Build: DurableIrDraft -> DurableIrDraft * 'value }
+
+[<RequireQualifiedAccess>]
+module PortableStep =
+    let create name =
+        { Definition = DurableIrStep.create name }
+
+    let name step = step.Definition.StepName
+
+    let definition step = step.Definition
 
 [<RequireQualifiedAccess>]
 module WorkflowFlow =
@@ -17,6 +28,13 @@ module WorkflowFlow =
 
     let activities calls =
         { Build = fun draft -> DurableIr.appendCallActivities calls draft }
+
+    let call step input = activity (PortableStep.name step) input
+
+    let calls calls =
+        calls
+        |> Seq.map (fun (step, input) -> PortableStep.name step, input)
+        |> activities
 
     let waitForSignal name =
         { Build = fun draft -> DurableIr.appendAwaitEvent (Signal name) draft }
@@ -90,13 +108,20 @@ module PortableFiregridSyntax =
 
     let flow = WorkflowFlowBuilder()
 
-    let firegrid workflows = DurableIrApp.create workflows
+    let firegrid steps workflows =
+        DurableIrApp.create (steps |> List.map PortableStep.definition) workflows
+
+    let step name = PortableStep.create name
 
     let value text = WorkflowFlow.value text
 
     let activity name input = WorkflowFlow.activity name input
 
     let activities calls = WorkflowFlow.activities calls
+
+    let call step input = WorkflowFlow.call step input
+
+    let calls calls = WorkflowFlow.calls calls
 
     let waitForSignal name = WorkflowFlow.waitForSignal name
 

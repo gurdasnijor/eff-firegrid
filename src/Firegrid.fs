@@ -3,6 +3,8 @@ namespace Eff.Firegrid
 open Eff
 open Eff.Foundation.Durable
 open Eff.Foundation.Durable.App
+open Fable.Core
+open Fable.Core.JsInterop
 
 type Step<'input, 'output> =
     internal
@@ -39,6 +41,14 @@ type ServeConfig =
       HostId: string
       MaxRunUntilIdleTicks: int option
       CancellationToken: System.Threading.CancellationToken option }
+
+type CliStepConfig =
+    { Command: string
+      Args: string list
+      WorkingDirectory: string option
+      Env: (string * string) list
+      SecretEnv: string list
+      TimeoutMillis: int option }
 
 [<RequireQualifiedAccess>]
 type StartResult =
@@ -85,6 +95,184 @@ module private Status =
         | DurableAppTypedWorkflowStatus.Waiting need -> WorkflowStatus.Waiting(string need)
         | DurableAppTypedWorkflowStatus.Completed output -> WorkflowStatus.Completed output
         | DurableAppTypedWorkflowStatus.Failed failure -> WorkflowStatus.Failed(string failure)
+
+module private CliProcess =
+    [<AllowNullLiteral>]
+    type private RunResult =
+        abstract exitCode: int
+        abstract signal: string
+        abstract stdout: string
+        abstract stderr: string
+        abstract timedOut: bool
+
+    [<Import("spawn", "node:child_process")>]
+    let private spawn (_command: string) (_args: string array) (_options: obj) : obj = jsNative
+
+    [<Emit("Object.assign({}, process.env, $0)")>]
+    let private mergeEnv (_env: obj) : obj = jsNative
+
+    [<Emit("process.env[$0]")>]
+    let private processEnv (_name: string) : string = jsNative
+
+    [<Emit("""new Promise((resolve, reject) => {
+            let child;
+            let timer;
+            let stdout = "";
+            let stderr = "";
+            let done = false;
+            const finish = (result) => {
+                if (done) return;
+                done = true;
+                if (timer) clearTimeout(timer);
+                resolve(result);
+            };
+            const fail = (error) => {
+                if (done) return;
+                done = true;
+                if (timer) clearTimeout(timer);
+                reject(error);
+            };
+            try {
+                child = $0($1, $2, $3);
+            } catch (error) {
+                fail(error);
+                return;
+            }
+            if (child.stdout) {
+                child.stdout.setEncoding("utf8");
+                child.stdout.on("data", chunk => { stdout += chunk; });
+            }
+            if (child.stderr) {
+                child.stderr.setEncoding("utf8");
+                child.stderr.on("data", chunk => { stderr += chunk; });
+            }
+            child.on("error", fail);
+            child.on("close", (code, signal) => {
+                finish({
+                    exitCode: code == null ? -1 : code,
+                    signal: signal == null ? "" : String(signal),
+                    stdout,
+                    stderr,
+                    timedOut: false
+                });
+            });
+            if ($5 > 0) {
+                timer = setTimeout(() => {
+                    try { child.kill("SIGKILL"); } catch (_) {}
+                    finish({
+                        exitCode: -1,
+                        signal: "SIGKILL",
+                        stdout,
+                        stderr,
+                        timedOut: true
+                    });
+                }, $5);
+            }
+            if (child.stdin) {
+                if ($4 != null && String($4).length > 0) {
+                    child.stdin.write(String($4));
+                }
+                child.stdin.end();
+            }
+        })""")>]
+    let private runSpawn
+        (_spawn: string -> string array -> obj -> obj)
+        (_command: string)
+        (_args: string array)
+        (_options: obj)
+        (_input: string)
+        (_timeoutMillis: int)
+        : JS.Promise<RunResult> =
+        jsNative
+
+    let private truncate limit (value: string) =
+        if System.String.IsNullOrEmpty value then ""
+        elif value.Length <= limit then value
+        else value.Substring(0, limit) + "...[truncated]"
+
+    let private redact secrets (value: string) =
+        (value, secrets)
+        ||> List.fold (fun redacted secret ->
+            if System.String.IsNullOrEmpty secret then
+                redacted
+            else
+                redacted.Replace(secret, "[redacted]"))
+
+    let private secretValues secretEnv =
+        secretEnv |> List.map (fun name -> name, processEnv name)
+
+    let private requireSecrets command secretEnv =
+        let values = secretValues secretEnv
+
+        values
+        |> List.tryFind (fun (_, value) -> System.String.IsNullOrWhiteSpace value)
+        |> Option.iter (fun (name, _) -> failwith ("missing secret env for CLI step '" + command + "': " + name))
+
+        values
+
+    let private options (config: CliStepConfig) secrets =
+        let env =
+            createObj
+                [ yield! config.Env |> List.map (fun (key, value) -> key ==> value)
+                  yield! secrets |> List.map (fun (key, value) -> key ==> value) ]
+
+        createObj
+            [ "env" ==> mergeEnv env
+              match config.WorkingDirectory with
+              | Some cwd -> "cwd" ==> cwd
+              | None -> () ]
+
+    let run (config: CliStepConfig) input =
+        async {
+            if System.String.IsNullOrWhiteSpace config.Command then
+                return failwith "CLI step command must not be empty"
+
+            let secrets = requireSecrets config.Command config.SecretEnv
+            let secretValues = secrets |> List.map snd
+            let timeoutMillis = config.TimeoutMillis |> Option.defaultValue 0
+
+            try
+                let! result =
+                    runSpawn
+                        spawn
+                        config.Command
+                        (config.Args |> List.toArray)
+                        (options config secrets)
+                        input
+                        timeoutMillis
+                    |> Async.AwaitPromise
+
+                let stderr = result.stderr |> redact secretValues |> truncate 4096
+
+                if result.timedOut then
+                    return failwith ("CLI step timed out after " + string timeoutMillis + "ms: " + config.Command)
+                elif result.exitCode <> 0 then
+                    let signal =
+                        if System.String.IsNullOrWhiteSpace result.signal then
+                            ""
+                        else
+                            " signal " + result.signal
+
+                    let detail =
+                        if System.String.IsNullOrWhiteSpace stderr then
+                            ""
+                        else
+                            ": " + stderr
+
+                    return
+                        failwith (
+                            "CLI step exited with code "
+                            + string result.exitCode
+                            + signal
+                            + ": "
+                            + config.Command
+                            + detail
+                        )
+                else
+                    return result.stdout
+            with error ->
+                return failwith ("CLI step failed to run " + config.Command + ": " + error.Message)
+        }
 
 module private Local =
     let currentTimeMillis () =
@@ -152,7 +340,13 @@ module Step =
 
     let define name handler : Step<string, string> = defineWith name id id id id handler
 
+    let cli name config : Step<string, string> = define name (CliProcess.run config)
+
     let toActivity step = step.Activity
+
+[<RequireQualifiedAccess>]
+module CliStep =
+    let define name config = Step.cli name config
 
 [<RequireQualifiedAccess>]
 module Workflow =
@@ -231,6 +425,40 @@ module ServeConfig =
 
     let environment environment hostId =
         create (Storage.environment environment None) hostId
+
+[<RequireQualifiedAccess>]
+module CliStepConfig =
+    let create command =
+        { Command = command
+          Args = []
+          WorkingDirectory = None
+          Env = []
+          SecretEnv = []
+          TimeoutMillis = None }
+
+    let withArgs args config =
+        { config with
+            Args = args |> List.ofSeq }
+
+    let addArg arg config =
+        { config with
+            Args = config.Args @ [ arg ] }
+
+    let inDirectory workingDirectory config =
+        { config with
+            WorkingDirectory = Some workingDirectory }
+
+    let withEnv key value config =
+        { config with
+            Env = config.Env @ [ key, value ] }
+
+    let withSecretEnv key config =
+        { config with
+            SecretEnv = config.SecretEnv @ [ key ] }
+
+    let withTimeoutMillis timeoutMillis config =
+        { config with
+            TimeoutMillis = Some timeoutMillis }
 
 type Client internal (inner: DurableAppClient) =
     member _.start (workflow: Workflow<'input, 'output>) (input: 'input) =
@@ -557,6 +785,8 @@ module Syntax =
 
     let stepWith name encodeInput decodeInput encodeOutput decodeOutput handler =
         Step.defineWith name encodeInput decodeInput encodeOutput decodeOutput handler
+
+    let cliStep name config = CliStep.define name config
 
     let workflow name factory = Workflow.define name factory
 

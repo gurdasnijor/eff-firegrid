@@ -326,6 +326,44 @@ Task-returning steps are a follow-up. This repository currently targets Fable,
 and the present Fable toolchain used here does not compile the stock F# `task`
 builder or `Async.AwaitTask` path.
 
+CLI process steps are ordinary durable steps whose implementation is a spawned
+command. The workflow does not learn a new calling convention:
+
+```fsharp
+let agentTurn =
+    cliStep
+        "agentTurn"
+        (CliStepConfig.create "npx"
+         |> CliStepConfig.withArgs [ "-y"; "@agentclientprotocol/claude-agent-acp@0.36.1" ]
+         |> CliStepConfig.withSecretEnv "ANTHROPIC_API_KEY"
+         |> CliStepConfig.withTimeoutMillis 120000)
+
+let askAgent prompt = durable {
+    return! call agentTurn prompt
+}
+```
+
+Required surface:
+
+```fsharp
+type CliStepConfig =
+    { Command: string
+      Args: string list
+      WorkingDirectory: string option
+      Env: (string * string) list
+      SecretEnv: string list
+      TimeoutMillis: int option }
+
+val cliStep :
+    name: string ->
+    config: CliStepConfig ->
+    Step<string, string>
+```
+
+The raw CLI layer owns process lifecycle only: spawn, stdin, stdout, stderr,
+exit code, timeout, cwd, and environment projection. ACP framing, Firegrid tool
+exposure, and transcripts are higher layers over this same step surface.
+
 ### Workflows
 
 Workflows are durable orchestrations expressed with a computation expression.
@@ -622,26 +660,31 @@ way to write them.
 The near-term proof of product value is running a local CLI/ACP agent as a
 durable Firegrid participant.
 
-Public shape:
+Implemented raw process shape:
 
 ```fsharp
-let claude =
-    cliAgent "claude" {
-        command "npx"
-        args [ "-y"; "@agentclientprotocol/claude-agent-acp@0.36.1" ]
-        protocol Acp
-        secretEnv "ANTHROPIC_API_KEY"
-    }
-
 let agentTurnStep =
-    step "agentTurn" (fun request -> async {
-        return! claude.run request
-    })
+    cliStep
+        "agentTurn"
+        (CliStepConfig.create "npx"
+         |> CliStepConfig.withArgs [ "-y"; "@agentclientprotocol/claude-agent-acp@0.36.1" ]
+         |> CliStepConfig.withSecretEnv "ANTHROPIC_API_KEY"
+         |> CliStepConfig.withTimeoutMillis 120000)
+
+let agentTurn prompt = durable {
+    return! call agentTurnStep prompt
+}
+```
+
+Target ACP shape over the raw process owner:
+
+```fsharp
+let claude = acpAgent "claude" agentTurnStep
 
 module Assistant =
     let ask prompt = entityAction {
         let! memory = state.getOrDefault "memory" []
-        let! reply = call agentTurnStep { Memory = memory; Prompt = prompt }
+        let! reply = call claude { Memory = memory; Prompt = prompt }
         do! state.set "memory" (reply :: memory)
         return reply
     }
@@ -771,17 +814,19 @@ Acceptance:
 
 Deliver:
 
-- raw subprocess owner
+- `CliStepConfig`
+- `cliStep` lowering to ordinary `Step<string,string>`
 - command/args/cwd/env/secret-env config
 - stdin/stdout/stderr capture
-- cancellation, timeout, nonzero exit, spawn failure behavior
-- durable transcript model
+- timeout, nonzero exit, spawn failure behavior
+- public workflow proof that calls a real process
 
 Acceptance:
 
 - one local command can run as a durable step
 - lifecycle edge cases are tested
 - no ACP assumptions in raw process owner
+- workflows still use `call` with the returned step value
 
 ### PR 7: ACP Agent Adapter
 

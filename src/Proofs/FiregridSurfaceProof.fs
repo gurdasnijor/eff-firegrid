@@ -11,6 +11,7 @@ module FiregridSurfaceProof =
           ParallelBindCompleted: bool
           LocalHostCompleted: bool
           LocalHostReportedWaiting: bool
+          ServeCompletesWorkflow: bool
           ClientResultReadsCompletion: bool
           SignalCompletesWorkflow: bool
           AppCapturedDescriptors: bool }
@@ -113,6 +114,7 @@ module FiregridSurfaceProof =
                 let parallelBindId = instance "parallel-bind"
                 let checkoutClientId = instance "checkout-2"
                 let approvalId = instance "approval"
+                let serveId = instance "serve"
 
                 let! checkoutOutput = host.runWith checkoutId checkoutWorkflow "order-1"
                 let! parallelOutput = host.runWith parallelId helloWorkflow "Tokyo,Seattle,London"
@@ -121,6 +123,21 @@ module FiregridSurfaceProof =
                 let! localApprovalStatus = localHost.tryRun approvalWorkflow "local-approval"
                 let! checkoutStart = host.client.startWith checkoutClientId checkoutWorkflow "order-3"
                 let! approvalStart = host.client.startWith approvalId approvalWorkflow "order-4"
+
+                let waitForResult attempts instanceId =
+                    let rec loop remaining =
+                        async {
+                            let! result = host.client.result checkoutWorkflow instanceId
+
+                            match result, remaining with
+                            | Some output, _ -> return Some output
+                            | None, 0 -> return None
+                            | None, _ ->
+                                do! Async.Sleep 100
+                                return! loop (remaining - 1)
+                        }
+
+                    loop attempts
 
                 let! clientResultReadsCompletion =
                     match checkoutStart with
@@ -131,6 +148,29 @@ module FiregridSurfaceProof =
                             let! result = host.client.result checkoutWorkflow instanceId
                             return result = Some "charged:reserved:order-3"
                         }
+
+                let! serveCompletesWorkflow =
+                    async {
+                        use cts = new System.Threading.CancellationTokenSource()
+
+                        let serveConfig =
+                            { ServeConfig.create storage "fg-serve" with
+                                MaxRunUntilIdleTicks = Some 10
+                                CancellationToken = Some cts.Token }
+
+                        Firegrid.serveWith serveConfig app |> Async.StartImmediate
+
+                        let! start = host.client.startWith serveId checkoutWorkflow "order-5"
+
+                        let! result =
+                            match start with
+                            | StartResult.Rejected _ -> async { return None }
+                            | StartResult.Started instanceId -> waitForResult 20 instanceId
+
+                        cts.Cancel()
+
+                        return result = Some "charged:reserved:order-5"
+                    }
 
                 let! signalCompletesWorkflow =
                     match approvalStart with
@@ -173,6 +213,7 @@ module FiregridSurfaceProof =
                       ParallelBindCompleted = parallelBindCompleted
                       LocalHostCompleted = localHostCompleted
                       LocalHostReportedWaiting = localHostReportedWaiting
+                      ServeCompletesWorkflow = serveCompletesWorkflow
                       ClientResultReadsCompletion = clientResultReadsCompletion
                       SignalCompletesWorkflow = signalCompletesWorkflow
                       AppCapturedDescriptors = appCapturedDescriptors }
@@ -186,6 +227,7 @@ module FiregridSurfaceProof =
                           "firegrid.parallel_bind", string result.ParallelBindCompleted
                           "firegrid.local_host", string result.LocalHostCompleted
                           "firegrid.local_waiting", string result.LocalHostReportedWaiting
+                          "firegrid.serve", string result.ServeCompletesWorkflow
                           "firegrid.client_result", string result.ClientResultReadsCompletion
                           "firegrid.signal", string result.SignalCompletesWorkflow
                           "firegrid.descriptors", string result.AppCapturedDescriptors ]
@@ -195,6 +237,7 @@ module FiregridSurfaceProof =
                 do! deleteInstance basin parallelBindId
                 do! deleteInstance basin checkoutClientId
                 do! deleteInstance basin approvalId
+                do! deleteInstance basin serveId
 
                 return result
             })
@@ -215,6 +258,8 @@ module FiregridSurfaceProof =
                       result.LocalHostCompleted)
                   v.Expect.Workload "local Firegrid test host reports external waits" (fun result ->
                       result.LocalHostReportedWaiting)
+                  v.Expect.Workload "Firegrid.serveWith completes public workflow" (fun result ->
+                      result.ServeCompletesWorkflow)
                   v.Expect.Workload "public client reads workflow result" (fun result ->
                       result.ClientResultReadsCompletion)
                   v.Expect.Workload "public client signal completes waiting workflow" (fun result ->
@@ -235,6 +280,7 @@ module FiregridSurfaceProof =
                                 "ParallelBindCompleted"
                                 "LocalHostCompleted"
                                 "LocalHostReportedWaiting"
+                                "ServeCompletesWorkflow"
                                 "ClientResultReadsCompletion"
                                 "SignalCompletesWorkflow"
                                 "AppCapturedDescriptors" ]

@@ -142,6 +142,14 @@ module Program =
               "build_examples"
               "--noCache" ]
 
+        run
+            "dotnet"
+            [ "fable"
+              "examples/firegrid-tutorial/src/Tutorial.fsx"
+              "--outDir"
+              "build_examples/firegrid"
+              "--noCache" ]
+
     let play () =
         run "dotnet" [ "fable"; "repl.fsx"; "--outDir"; "build"; "--runScript" ]
 

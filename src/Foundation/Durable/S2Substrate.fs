@@ -96,7 +96,25 @@ module S2Substrate =
         }
 
     let readInbox from count (owned: OwnedKey) =
-        owned.Inbox |> S2.read (S2.FromSeqNum from) count
+        async {
+            try
+                let! tail = owned.Inbox |> S2.checkTail
+
+                if from >= tail.SeqNum then
+                    return []
+                else
+                    return!
+                        owned.Inbox
+                        |> S2.readWith
+                            { S2.ReadOptions.empty with
+                                Start = Some(S2.FromSeqNum from)
+                                Count = Some count
+                                Clamp = true }
+            with error ->
+                match S2Errors.classify error with
+                | S2Errors.RangeNotSatisfiable _ -> return []
+                | _ -> return raise error
+        }
 
     let appendInboxText headers body (pair: StreamPair) =
         pair.Inbox |> S2.append [ S2.Record.textWith headers body ]
@@ -123,12 +141,26 @@ module S2Substrate =
     let relayTextBatch decode encodeMessage destinationKey inboxOf from count (owned: OwnedKey) =
         async {
             let! records =
-                owned.Log
-                |> S2.readWith
-                    { S2.ReadOptions.empty with
-                        Start = Some(S2.FromSeqNum from)
-                        Count = Some count
-                        IgnoreCommandRecords = true }
+                async {
+                    try
+                        let! tail = owned.Log |> S2.checkTail
+
+                        if from >= tail.SeqNum then
+                            return []
+                        else
+                            return!
+                                owned.Log
+                                |> S2.readWith
+                                    { S2.ReadOptions.empty with
+                                        Start = Some(S2.FromSeqNum from)
+                                        Count = Some count
+                                        Clamp = true
+                                        IgnoreCommandRecords = true }
+                    with error ->
+                        match S2Errors.classify error with
+                        | S2Errors.RangeNotSatisfiable _ -> return []
+                        | _ -> return raise error
+                }
 
             let mutable delivered = 0
 

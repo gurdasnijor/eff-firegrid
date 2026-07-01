@@ -27,11 +27,16 @@ than it needs to be.
 Build a native `firegrid-host` Rust binary that owns systems concerns while the
 high-level authoring surface remains free to evolve.
 
-The codebase should maximize target flexibility. Firegrid should not repeat the
-current JavaScript coupling in Rust form. The durable core must stay portable
-across targets; only narrow adapter layers should know about Node, .NET, native
-Rust crates, local filesystems, process APIs, clocks, network clients, or
-telemetry backends.
+The immediate target is a high-quality Rust runtime, not a lowest-common-
+denominator portability exercise. Rust should be allowed to use strong native
+libraries where they improve correctness: `s2-sdk` for S2, `processkit` for
+process supervision, `tokio` for async work, and Rust-native telemetry.
+
+The guardrail is simpler than a full port architecture: keep durable semantics
+separate from infrastructure effects. Do not bury process spawning, S2 requests,
+clocks, or telemetry inside replay logic. Use direct Rust modules and traits only
+where they make the Rust implementation clearer or testable. Future
+cross-compilation can be evaluated once the Rust runtime has a coherent shape.
 
 Target split:
 
@@ -41,7 +46,7 @@ Authoring layer
   durable authoring ergonomics
   descriptor serialization
 
-Target-agnostic core
+Rust durable core
   shared value types
   codecs
   durable state machines
@@ -58,62 +63,29 @@ Rust host
   telemetry
 ```
 
-## Target-Agnostic Core Requirement
+## Rust-First Design Rules
 
-Most of the codebase should be written as target-agnostic core logic.
+The Rust host should optimize for production correctness and maintainability.
 
-Target-agnostic means:
+Required rules:
 
-- no `Fable.Core.JsInterop` in core modules
-- no Node-specific packages in core modules
-- no direct filesystem, process, environment, clock, network, or telemetry calls
-- no promise-specific APIs such as `Async.AwaitPromise` in core modules
-- no generated JavaScript assumptions in public semantics
-- deterministic functions over explicit input values wherever possible
-- all nondeterminism enters through small port interfaces
+- no Fable/Node interop in the Rust runtime
+- durable replay and fold logic is deterministic Rust code over explicit values
+- S2, process supervision, time, environment, and telemetry live in host modules,
+  not inside replay functions
+- traits are introduced only for real test seams or multiple concrete
+  implementations, not as speculative portability scaffolding
+- descriptor formats are stable and explicit so authoring layers can target the
+  Rust host without linking to its internals
+- runtime errors are typed or structured enough to be useful to operators
+- secrets are never written to logs, durable history, transcripts, or telemetry
 
-Target-specific code belongs behind ports:
+Non-goals for this phase:
 
-```text
-StoragePort
-  append / read / claim / ensure-stream
-
-ClockPort
-  now / sleep-until
-
-ProcessPort
-  run / stream / kill-tree
-
-TelemetryPort
-  span / event / attributes
-
-EnvironmentPort
-  read variable / project secret
-```
-
-Each port can have multiple adapters:
-
-- Fable/Node adapter for current continuity
-- native Rust adapter for the new host
-- .NET adapter if we later want a normal .NET/F# runtime
-- fake/in-memory adapter for deterministic tests
-
-Compile contracts should reflect this split:
-
-```text
-pure core
-  dotnet build
-  dotnet fable --lang javascript
-  dotnet fable --lang rust, where supported
-  cargo test for Rust-native core ports
-
-target adapters
-  adapter-specific compile and integration tests
-```
-
-The first rule for new work: if a feature can be expressed in target-agnostic
-core, put it there. Only put code in the Rust host, Fable/Node layer, or future
-.NET host when it is genuinely about that target.
+- forcing every module through a target-agnostic port abstraction
+- keeping the existing JavaScript SDK path alive inside the Rust host
+- making Fable Rust a production dependency
+- designing a .NET runtime before the Rust runtime works
 
 ## Native Dependencies
 
@@ -126,6 +98,31 @@ Initial Rust host dependencies:
 
 The branch currently includes a compile-backed `firegrid-host` scaffold using
 `s2-sdk = "0.31.7"`.
+
+## Migration Inventory
+
+The migration should be explicit about what moves, what is replaced, and what
+stays as an authoring/proof concern.
+
+| Current area | Current files | Rust target | Notes |
+| --- | --- | --- | --- |
+| S2 client bindings | `src/S2/Interop.fs`, `src/S2/Client.fs`, `src/S2/Patterns.fs`, `src/S2/Cli.fs`, `src/S2/Errors.fs` | `crates/firegrid-host/src/s2/*` or `crates/firegrid-s2` | Replace JS SDK calls with `s2-sdk`. Keep only concepts needed by durable host: basin, stream, append, read, fence, trim, sessions if required. |
+| Subject history | `src/Foundation/SubjectHistory.fs` | `crates/firegrid-core/src/subject_history.rs` | Port directly. This is mostly pure fold/cursor/version logic and should be a first Rust unit-test target. |
+| State view | `src/Foundation/StateView.fs` | `crates/firegrid-core/src/state_view.rs` plus host integration if needed | Split pure fold state from background cursor/pump behavior. Rust implementation can use native async tasks. |
+| KV store | `src/Foundation/KvStore.fs` | likely defer or port after substrate | Useful validation case, but not needed before durable workflow host. |
+| Durable semantics/API | `src/Foundation/Durable/Semantics.fs`, `src/Foundation/Durable/Api.fs` | `crates/firegrid-core/src/durable/*` | Port replay terms, history, needs, race terms, activity/timer/signal records. This is the core behavior to preserve. |
+| Registry | `src/Foundation/Durable/Registry.fs` | `crates/firegrid-core/src/registry.rs` | Needed for named workflows/activities. Rust may use stronger typed maps and duplicate detection. |
+| S2 substrate | `src/Foundation/Durable/S2Substrate.fs` | `crates/firegrid-host/src/substrate.rs` | Native S2 implementation with fencing and inbox/log streams. Depends on `s2-sdk`. |
+| Stepper/codecs | `src/Foundation/Durable/Stepper.fs`, `src/Foundation/Durable/StepRecordCodec.fs` | `crates/firegrid-core/src/stepper.rs`, `crates/firegrid-core/src/codec.rs` | Port command planning and record encoding early. Prefer explicit serde formats over ad hoc string parsing if compatibility is not required. |
+| Command dispatch | `src/Foundation/Durable/CommandDispatch.fs` | `crates/firegrid-host/src/dispatch.rs` | Reads outgoing commands, checkpoints dispatcher progress, enforces idempotence. |
+| Activity adapter | `src/Foundation/Durable/ActivityAdapter.fs` | `crates/firegrid-host/src/activity.rs` | Dispatch registered activity/process steps and publish completion envelopes. |
+| Inbox fold | `src/Foundation/Durable/InboxFold.fs` | `crates/firegrid-host/src/inbox.rs` | Fold inbox completions/signals/starts into workflow log exactly once. |
+| Timer adapter | `src/Foundation/Durable/TimerAdapter.fs` | `crates/firegrid-host/src/timers.rs` | Native Rust timer loop; no JS timers. |
+| Durable host/runtime/app | `src/Foundation/Durable/Host.fs`, `Runtime.fs`, `App.fs`, `Client.fs` | `crates/firegrid-host/src/runtime.rs`, `client.rs`, `app.rs` | Rebuild around Rust ownership, host loops, typed status, and app descriptor loading. |
+| Public F# API | `src/Firegrid.fs` | defer; descriptor authoring layer | Do not port first. The Rust host should define what descriptors it consumes; ergonomic F# can target that after host shape stabilizes. |
+| Telemetry | `src/Telemetry/Trace.fs`, `src/Telemetry/Otel.fs` | `crates/firegrid-host/src/telemetry.rs` | Replace JS OpenTelemetry imports with `tracing` first; OTLP export can follow. |
+| Proof runner resources | `src/Proofs/*`, especially `S2Lite.fs`, `ProcessHost.fs`, `Reports.fs`, `TraceSql.fs` | Rust unit/integration tests plus optional acceptance runner | Do not port wholesale. Preserve proof properties as test cases where useful. |
+| CLI/process agent support | PR #62 concepts, not merged here | `crates/firegrid-host/src/process.rs` | Implement with `processkit`; subprocess execution belongs in Rust host, not Fable interop. |
 
 ## Compile Target
 
@@ -165,9 +162,9 @@ Acceptance:
 - `cargo check -p firegrid-host` passes
 - no Node/Fable packages are required for the Rust host
 
-### Phase 2: Rust S2 Substrate
+### Phase 2: Native S2 Substrate
 
-Implement a native Rust adapter for the storage port using `s2-sdk`.
+Implement the durable S2 substrate directly against `s2-sdk`.
 
 - ensure log and inbox streams
 - claim ownership with fencing
@@ -179,11 +176,11 @@ Acceptance:
 
 - Rust tests cover the same substrate invariants as the F# S2 substrate proof
 - S2 SDK usage is native Rust only
-- target-agnostic storage semantics remain independent of `s2-sdk`
+- no JavaScript SDK, npm package, or Fable interop is involved
 
-### Phase 3: Target-Agnostic Durable Core
+### Phase 3: Rust Durable Core
 
-Extract or port only the stable pure semantics:
+Port the stable durable semantics into Rust:
 
 - step records
 - codecs
@@ -195,13 +192,12 @@ Extract or port only the stable pure semantics:
 Acceptance:
 
 - Rust unit tests mirror the meaningful F# proof properties
-- no JS interop appears in durable core
-- the same semantics have a clear path to Fable Rust or native Rust validation
+- durable core has no direct S2/process/telemetry calls
+- code reads as native Rust, not transliterated F# where that hurts clarity
 
 ### Phase 4: Process Runner
 
-Add a native Rust adapter for the process port using `processkit` or a
-comparably strong native runner.
+Add a process runner using `processkit` or a comparably strong native runner.
 
 Required behavior:
 
@@ -217,7 +213,7 @@ Acceptance:
 - nonzero exit, timeout, and process-tree kill tests pass
 - no shell invocation is required for normal commands
 - process output limits are enforced
-- workflow semantics call a process port, not `processkit` directly
+- process runner failures map cleanly into durable activity failures
 
 ### Phase 5: Descriptor Boundary
 
@@ -242,20 +238,23 @@ Acceptance:
 - a workflow descriptor can be loaded by the Rust host
 - a process-backed step can be invoked by the Rust host
 - host output/status can be queried without Fable/Node
-- descriptor validation is target-agnostic
+- descriptor validation rejects duplicate names, missing handlers, invalid
+  codecs, and unsafe process configs
 
 ## Fable Rust Position
 
-Fable's Rust target is useful for experiments and may compile pure F# domain
-logic, but it should not be the systems-runtime plan yet.
+Fable's Rust target is useful for experiments, but it should not drive the
+runtime migration.
 
 Use Fable Rust for:
 
-- probing whether pure F# semantics can become Rust
-- validating the shape of small authoring/core slices
+- exploratory compile checks
+- future authoring-layer experiments
+- identifying which F# patterns keep future transpilation options open
 
 Do not use it yet for:
 
+- Rust host implementation
 - native S2 access
 - subprocess ownership
 - telemetry
@@ -265,13 +264,12 @@ Those pieces should be Rust-native.
 
 ## Open Questions
 
-- Should the Rust host consume serialized descriptors, generated Rust code, or
-  both?
+- Should the Rust host consume serialized descriptors, generated Rust code, or both?
 - Which parts of the current F# durable core are worth porting directly versus
   redesigning around Rust types?
-- What is the minimal first `core` compile contract that should be enforced in
-  CI across more than one target?
 - Should the first process runner use `processkit` immediately or start with
   `tokio::process` and graduate once semantics are clear?
 - How much of the proof harness should move to Rust tests versus remaining as
   cross-language acceptance checks?
+- Which legacy F# proof properties are mandatory acceptance gates for the first
+  Rust host milestone?

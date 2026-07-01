@@ -583,19 +583,6 @@ let! result =
 Expect.equal expected result
 ```
 
-Most tests should use the built-in local assertions:
-
-```fsharp
-let! completed =
-    host.expectCompleted fulfillment wishlist expected
-
-let! _ =
-    host.expectSteps fulfillment wishlist [ Step.name findMatchingGift; Step.name pickGift; Step.name reserve ]
-
-let! _ =
-    host.expectStepRanOnce fulfillment wishlist reserve
-```
-
 When tests need evidence, use the detailed local run:
 
 ```fsharp
@@ -614,13 +601,6 @@ let! status =
     host.tryRun approvalWorkflow request
 
 Expect.equal (WorkflowStatus.Waiting "signal:approved") status
-```
-
-Or use the assertion helper directly:
-
-```fsharp
-let! _ =
-    host.expectWaiting approvalWorkflow request "signal:approved"
 ```
 
 Entity test:
@@ -743,7 +723,6 @@ Deliver:
 
 - broaden `Firegrid.localTestHost app`
 - `host.run workflow input`, `host.tryRun workflow input`, and `host.inspect workflow input`
-- `host.expectCompleted`, `host.expectWaiting`, `host.expectSteps`, and `host.expectStepRanOnce`
 - trace/assertion APIs for public durable behavior
 - replay assertions that steps execute once
 - migration of relevant `.fsx` proof examples to public test-host tests

@@ -1,0 +1,3 @@
+[workspace]
+members = [ "crates/firegrid-host" ]
+resolver = "3"

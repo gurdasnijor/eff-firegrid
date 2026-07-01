@@ -1,6 +1,7 @@
 module FiregridRust.Program
 
 open Eff.Foundation.Durable
+open Eff.Firegrid
 
 let activityCommand opId name input =
     DurableIrCommitCommand(DurableIrCommandCallActivity(opId, { Name = name; Input = input }))
@@ -31,18 +32,16 @@ let summarizePlan plan =
                 "commit:other"
 
 let replaySummary () =
-    let draft, reservation =
-        DurableIr.empty
-        |> DurableIr.appendCallActivity "reserve" (ValueExpr.literal "order-1")
+    let checkout =
+        workflow "checkout" {
+            let! reservation = activity "reserve" (value "order-1")
 
-    let draft, _ =
-        draft
-        |> DurableIr.appendCallActivities [ "charge", reservation; "notify", ValueExpr.literal "order-1" ]
+            let! _ = activities [ "charge", reservation; "notify", value "order-1" ]
 
-    let workflow =
-        draft |> DurableIr.finish reservation |> DurableWorkflow.create "checkout"
+            return reservation
+        }
 
-    let app = DurableIrApp.empty |> DurableIrApp.bindWorkflow workflow
+    let app = firegrid [ checkout ]
 
     let history =
         History.empty |> History.append (ActivityCompleted(OpId 0, "reserved:order-1"))

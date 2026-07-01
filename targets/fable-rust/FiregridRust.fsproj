@@ -12,6 +12,7 @@
     <Compile Include="../../src/Foundation/Durable/Semantics.fs" />
     <Compile Include="../../src/Foundation/Durable/Api.fs" />
     <Compile Include="../../src/Foundation/Durable/Ir.fs" />
+    <Compile Include="../../src/Firegrid.Portable.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
 

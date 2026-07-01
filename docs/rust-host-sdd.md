@@ -161,6 +161,33 @@ commands (`out|...`) with length-prefixed fields. This keeps payload contents
 delimiter-safe while remaining simple enough for the Rust host to decode
 directly.
 
+## Authoring Surface
+
+The first Rust-targetable authoring surface is intentionally small:
+
+```fsharp
+open Eff.Firegrid
+
+let checkout =
+    workflow "checkout" {
+        let! reservation = activity "reserve" (value "order-1")
+
+        let! _ =
+            activities
+                [ "charge", reservation
+                  "notify", value "order-1" ]
+
+        return reservation
+    }
+
+let app = firegrid [ checkout ]
+```
+
+This lowers directly to `DurableIrApp`. It gives application code a CE for
+workflow sequencing without storing continuations in durable runtime state. The
+app boundary is a plain list for now because `firegrid [ checkout; other ]` is
+clearer and more Rust-target friendly than an app-level CE.
+
 Migration direction:
 
 - keep the existing `durable {}` CE working on .NET/Fable JS while the runtime

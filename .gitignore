@@ -4,6 +4,7 @@ obj/
 
 # Fable / JS build output
 build/
+build_examples/
 build_test/
 build_bench/
 build_proofs/

@@ -134,13 +134,30 @@ module Program =
         run "dotnet" [ "fable"; "repl.fsx"; "--outDir"; "build"; "--noCache" ]
 
     let examplesSmoke () =
-        run
-            "dotnet"
-            [ "fable"
-              "examples/durable-tutorial/src/Tutorial.fsx"
-              "--outDir"
-              "build_examples"
-              "--noCache" ]
+        let durableExamplesRoot = Path.Combine(root, "examples", "durable")
+
+        let durableExamples =
+            if Directory.Exists(durableExamplesRoot) then
+                Directory.EnumerateFiles(durableExamplesRoot, "Program.fsx", SearchOption.AllDirectories)
+                |> Seq.sort
+                |> Seq.map (fun path -> Path.GetRelativePath(root, path))
+                |> Seq.toList
+            else
+                []
+
+        let scripts = "examples/durable-tutorial/src/Tutorial.fsx" :: durableExamples
+
+        for script in scripts do
+            let outDir =
+                script.Replace(Path.DirectorySeparatorChar, '_').Replace(Path.AltDirectorySeparatorChar, '_')
+
+            run
+                "dotnet"
+                [ "fable"
+                  script
+                  "--outDir"
+                  Path.Combine("build_examples", outDir)
+                  "--noCache" ]
 
     let play () =
         run "dotnet" [ "fable"; "repl.fsx"; "--outDir"; "build"; "--runScript" ]

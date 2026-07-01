@@ -1,13 +1,14 @@
 namespace Eff.Proofs
 
 open Eff
+open Eff.Foundation.Durable
 open Eff.Firegrid
 
 module FiregridSurfaceProof =
     type FiregridSurfaceResult =
         { WorkflowCompleted: bool
-          AllCompleted: bool
-          BothCompleted: bool
+          ParallelCompleted: bool
+          ParallelBindCompleted: bool
           ClientResultReadsCompletion: bool
           SignalCompletesWorkflow: bool
           AppCapturedDescriptors: bool }
@@ -37,14 +38,20 @@ module FiregridSurfaceProof =
 
     let private helloSequence (cities: string) =
         durable {
-            let! greetings = cities.Split(",") |> Array.toList |> List.map (call helloStep) |> all
+            let! greetings =
+                cities.Split(",")
+                |> Array.toList
+                |> List.map (call helloStep)
+                |> Durable.Parallel
 
             return String.concat "|" greetings
         }
 
     let private reserveAndHello input =
         durable {
-            let! reserved, greeting = both (call reserveStep input) (call helloStep input)
+            let! reserved = call reserveStep input
+            and! greeting = call helloStep input
+
             return reserved + "|" + greeting
         }
 
@@ -58,7 +65,7 @@ module FiregridSurfaceProof =
 
     let private helloWorkflow = workflow "firegrid-hello-sequence" helloSequence
 
-    let private bothWorkflow = workflow "firegrid-both" reserveAndHello
+    let private parallelBindWorkflow = workflow "firegrid-parallel-bind" reserveAndHello
 
     let private approvalWorkflow = workflow "firegrid-approval" approval
 
@@ -69,8 +76,15 @@ module FiregridSurfaceProof =
             step helloStep
             workflow checkoutWorkflow
             workflow helloWorkflow
-            workflow bothWorkflow
+            workflow parallelBindWorkflow
             workflow approvalWorkflow
+        }
+
+    let private deleteInstance basin instanceId =
+        async {
+            let key = DurableClient.instanceKey instanceId
+            do! basin |> S2.deleteStream (StorageKey.inboxStreamName key)
+            do! basin |> S2.deleteStream (StorageKey.logStreamName key)
         }
 
     let private runWorkload ctx =
@@ -84,14 +98,24 @@ module FiregridSurfaceProof =
                 let s2 = WorkloadContext.requireS2 ctx
                 let basinName = "firegrid-surface-" + string (int64 (Reports.nowMillis ()))
                 let! _ = s2.Client |> S2.createBasin basinName
-                let storage = s2.Client |> S2.basin basinName |> Storage.s2
+                let basin = s2.Client |> S2.basin basinName
+                let storage = basin |> Storage.s2
                 let host = Firegrid.testHostWith storage "fg-surface" app
 
-                let! checkoutOutput = host.run checkoutWorkflow "order-1"
-                let! allOutput = host.run helloWorkflow "Tokyo,Seattle,London"
-                let! bothOutput = host.run bothWorkflow "order-2"
-                let! checkoutStart = host.client.start checkoutWorkflow "order-3"
-                let! approvalStart = host.client.start approvalWorkflow "order-4"
+                let instance suffix =
+                    InstanceId.create (basinName + "-" + suffix)
+
+                let checkoutId = instance "checkout-1"
+                let parallelId = instance "parallel"
+                let parallelBindId = instance "parallel-bind"
+                let checkoutClientId = instance "checkout-2"
+                let approvalId = instance "approval"
+
+                let! checkoutOutput = host.runWith checkoutId checkoutWorkflow "order-1"
+                let! parallelOutput = host.runWith parallelId helloWorkflow "Tokyo,Seattle,London"
+                let! parallelBindOutput = host.runWith parallelBindId parallelBindWorkflow "order-2"
+                let! checkoutStart = host.client.startWith checkoutClientId checkoutWorkflow "order-3"
+                let! approvalStart = host.client.startWith approvalId approvalWorkflow "order-4"
 
                 let! clientResultReadsCompletion =
                     match checkoutStart with
@@ -116,20 +140,20 @@ module FiregridSurfaceProof =
                         }
 
                 let workflowCompleted = checkoutOutput = "charged:reserved:order-1"
-                let allCompleted = allOutput = "Hello, Tokyo|Hello, Seattle|Hello, London"
-                let bothCompleted = bothOutput = "reserved:order-2|Hello, order-2"
+                let parallelCompleted = parallelOutput = "Hello, Tokyo|Hello, Seattle|Hello, London"
+                let parallelBindCompleted = parallelBindOutput = "reserved:order-2|Hello, order-2"
 
                 let appCapturedDescriptors =
                     FiregridApp.stepNames app = [ "firegrid-reserve"; "firegrid-charge"; "firegrid-hello" ]
                     && FiregridApp.workflowNames app = [ "firegrid-checkout"
                                                          "firegrid-hello-sequence"
-                                                         "firegrid-both"
+                                                         "firegrid-parallel-bind"
                                                          "firegrid-approval" ]
 
                 let result =
                     { WorkflowCompleted = workflowCompleted
-                      AllCompleted = allCompleted
-                      BothCompleted = bothCompleted
+                      ParallelCompleted = parallelCompleted
+                      ParallelBindCompleted = parallelBindCompleted
                       ClientResultReadsCompletion = clientResultReadsCompletion
                       SignalCompletesWorkflow = signalCompletesWorkflow
                       AppCapturedDescriptors = appCapturedDescriptors }
@@ -139,11 +163,17 @@ module FiregridSurfaceProof =
                         "proof.firegrid_surface.completed"
                         [ "proof.property", "firegrid-surface"
                           "firegrid.workflow", string result.WorkflowCompleted
-                          "firegrid.all", string result.AllCompleted
-                          "firegrid.both", string result.BothCompleted
+                          "firegrid.parallel", string result.ParallelCompleted
+                          "firegrid.parallel_bind", string result.ParallelBindCompleted
                           "firegrid.client_result", string result.ClientResultReadsCompletion
                           "firegrid.signal", string result.SignalCompletesWorkflow
                           "firegrid.descriptors", string result.AppCapturedDescriptors ]
+
+                do! deleteInstance basin checkoutId
+                do! deleteInstance basin parallelId
+                do! deleteInstance basin parallelBindId
+                do! deleteInstance basin checkoutClientId
+                do! deleteInstance basin approvalId
 
                 return result
             })
@@ -156,9 +186,10 @@ module FiregridSurfaceProof =
             verify (fun v ->
                 [ v.Expect.Workload "workflow completes through public Firegrid surface" (fun result ->
                       result.WorkflowCompleted)
-                  v.Expect.Workload "durable all completes first-class step calls" (fun result -> result.AllCompleted)
-                  v.Expect.Workload "durable both completes two first-class step calls" (fun result ->
-                      result.BothCompleted)
+                  v.Expect.Workload "Durable.Parallel completes first-class step calls" (fun result ->
+                      result.ParallelCompleted)
+                  v.Expect.Workload "durable and! completes two first-class step calls" (fun result ->
+                      result.ParallelBindCompleted)
                   v.Expect.Workload "public client reads workflow result" (fun result ->
                       result.ClientResultReadsCompletion)
                   v.Expect.Workload "public client signal completes waiting workflow" (fun result ->
@@ -175,8 +206,8 @@ module FiregridSurfaceProof =
                           Status = Some "ok"
                           OutputContains =
                               [ "WorkflowCompleted"
-                                "AllCompleted"
-                                "BothCompleted"
+                                "ParallelCompleted"
+                                "ParallelBindCompleted"
                                 "ClientResultReadsCompletion"
                                 "SignalCompletesWorkflow"
                                 "AppCapturedDescriptors" ]

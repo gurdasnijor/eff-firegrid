@@ -89,6 +89,19 @@ type DurableBuilder() =
     member _.Combine(first: Durable<unit>, second: Durable<'output>) =
         DurableProgram.bind (fun () -> second) first
 
+    member _.MergeSources(left: Durable<'left>, right: Durable<'right>) =
+        match left, right with
+        | StepCall(leftActivity, leftDecode), StepCall(rightActivity, rightDecode) ->
+            Eff.Foundation.Durable.Workflow.all [ leftActivity; rightActivity ]
+            |> Eff.Foundation.Durable.Durable.map (function
+                | [ leftPayload; rightPayload ] -> leftDecode leftPayload, rightDecode rightPayload
+                | _ -> failwith "durable parallel bind expected exactly two results")
+            |> Program
+        | _ ->
+            DurableProgram.bind
+                (fun leftValue -> DurableProgram.map (fun rightValue -> leftValue, rightValue) right)
+                left
+
 [<RequireQualifiedAccess>]
 module Step =
     let defineWith name encodeInput decodeInput encodeOutput decodeOutput handler : Step<'input, 'output> =
@@ -210,6 +223,30 @@ type TestHost internal (client: Client, worker: Worker) =
 
     member _.worker = worker
 
+    member _.startAndRunWith instanceId (workflow: Workflow<'input, 'output>) (input: 'input) =
+        async {
+            let! start = client.startWith instanceId workflow input
+
+            match start with
+            | StartResult.Rejected error -> return failwith ("workflow start rejected: " + error)
+            | StartResult.Started instanceId ->
+                do! worker.runUntilIdle instanceId
+                let! status = client.status workflow instanceId
+                return instanceId, status
+        }
+
+    member this.runWith instanceId (workflow: Workflow<'input, 'output>) (input: 'input) =
+        async {
+            let! _, status = this.startAndRunWith instanceId workflow input
+
+            match status with
+            | WorkflowStatus.Completed output -> return output
+            | WorkflowStatus.NotFound -> return failwith "workflow did not complete: not found"
+            | WorkflowStatus.Running -> return failwith "workflow did not complete: still running"
+            | WorkflowStatus.Waiting need -> return failwith ("workflow did not complete: waiting for " + need)
+            | WorkflowStatus.Failed error -> return failwith ("workflow failed: " + error)
+        }
+
     member _.startAndRun (workflow: Workflow<'input, 'output>) (input: 'input) =
         async {
             let! start = client.start workflow input
@@ -256,6 +293,36 @@ module Firegrid =
     let testHostWith storage hostId app =
         TestHost(clientWith storage app, workerWith storage hostId app)
 
+[<RequireQualifiedAccess>]
+module Durable =
+    let Parallel operations =
+        let operations = operations |> List.ofSeq
+
+        match operations with
+        | [] -> DurableProgram.result []
+        | _ ->
+            let stepCalls =
+                operations
+                |> List.map (function
+                    | StepCall(activity, decode) -> Some(activity, decode)
+                    | Program _ -> None)
+
+            if stepCalls |> List.forall Option.isSome then
+                let calls = stepCalls |> List.choose id
+                let activities = calls |> List.map fst
+                let decoders = calls |> List.map snd
+
+                Eff.Foundation.Durable.Workflow.all activities
+                |> Eff.Foundation.Durable.Durable.map (fun payloads ->
+                    List.map2 (fun decode payload -> decode payload) decoders payloads)
+                |> Program
+            else
+                let cons head tail =
+                    DurableProgram.map (fun values -> head :: values) tail
+
+                (DurableProgram.result [], operations |> List.rev)
+                ||> List.fold (fun tail operation -> DurableProgram.bind (fun value -> cons value tail) operation)
+
 type FiregridBuilder() =
     member _.Yield(()) = FiregridApp.empty
 
@@ -298,49 +365,6 @@ module Syntax =
                 (step.Activity.EncodeInput input)
 
         StepCall(activity, step.Activity.DecodeOutput)
-
-    let all operations =
-        let operations = operations |> List.ofSeq
-
-        match operations with
-        | [] -> DurableProgram.result []
-        | _ ->
-            let stepCalls =
-                operations
-                |> List.map (function
-                    | StepCall(activity, decode) -> Some(activity, decode)
-                    | Program _ -> None)
-
-            if stepCalls |> List.forall Option.isSome then
-                let calls = stepCalls |> List.choose id
-                let activities = calls |> List.map fst
-                let decoders = calls |> List.map snd
-
-                Eff.Foundation.Durable.Workflow.all activities
-                |> Eff.Foundation.Durable.Durable.map (fun payloads ->
-                    List.map2 (fun decode payload -> decode payload) decoders payloads)
-                |> Program
-            else
-                let cons head tail =
-                    DurableProgram.map (fun values -> head :: values) tail
-
-                (DurableProgram.result [], operations |> List.rev)
-                ||> List.fold (fun tail operation -> DurableProgram.bind (fun value -> cons value tail) operation)
-
-    let both left right =
-        match left, right with
-        | StepCall(leftActivity, leftDecode), StepCall(rightActivity, rightDecode) ->
-            Eff.Foundation.Durable.Workflow.all [ leftActivity; rightActivity ]
-            |> Eff.Foundation.Durable.Durable.map (function
-                | [ leftPayload; rightPayload ] -> leftDecode leftPayload, rightDecode rightPayload
-                | _ -> failwith "both expected exactly two results")
-            |> Program
-        | _ ->
-            durable {
-                let! leftValue = left
-                let! rightValue = right
-                return leftValue, rightValue
-            }
 
     let waitFor name =
         Eff.Foundation.Durable.Workflow.waitForSignal name |> Program

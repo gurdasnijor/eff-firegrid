@@ -69,7 +69,7 @@ let workflow wishlist = durable {
     let! matches =
         wishlist.Wishes
         |> List.map (call findMatchingGift)
-        |> all
+        |> Durable.Parallel
 
     let! gift = call pickGift (List.concat matches)
     let reservation = { Kid = wishlist.Kid; Product = gift }
@@ -83,7 +83,8 @@ The durable substitutions are:
 
 - `async` orchestration body becomes `durable`
 - direct nondeterministic function call becomes `call` of a first-class step
-- `Async.Parallel` / `Task.WhenAll` becomes durable `all`
+- `Async.Parallel` / `Task.WhenAll` becomes `Durable.Parallel`
+- fixed-width parallel binds use the normal F# `and!` CE syntax
 - durable external waits use `waitFor`
 
 Do not force the user to pass a context around for every operation when a
@@ -263,7 +264,8 @@ Workflow code should primarily use CE operations:
 ```fsharp
 call
 send
-all
+Durable.Parallel
+and!
 race
 timeout
 waitFor
@@ -333,13 +335,24 @@ let fulfill wishlist = durable {
     let! matches =
         wishlist.Wishes
         |> List.map (call findMatchingGift)
-        |> all
+        |> Durable.Parallel
 
     let! gift = call pickGift (List.concat matches)
     let reservation = { Kid = wishlist.Kid; Product = gift }
 
     do! call reserve reservation
     return reservation
+}
+```
+
+Fixed-width parallel work uses normal F# computation-expression syntax:
+
+```fsharp
+let reserveAndGreet orderId = durable {
+    let! reservation = call reserve orderId
+    and! greeting = call greet orderId
+
+    return reservation, greeting
 }
 ```
 
@@ -355,8 +368,8 @@ val workflow :
     Workflow<'input, 'output>
 
 val call : Step<'input, 'output> -> 'input -> Durable<'output>
-val all : Durable<'a> seq -> Durable<'a list>
-val both : Durable<'a> -> Durable<'b> -> Durable<'a * 'b>
+module Durable =
+    val Parallel : Durable<'a> seq -> Durable<'a list>
 val waitFor<'payload> : name: string -> Durable<'payload>
 val signal : name: string -> Signal<string>
 val signalWith :
@@ -671,7 +684,7 @@ Deliver:
 - `Step<'input,'output>`
 - `step` / `stepWith`
 - `Durable<'output>` and `durable {}` CE
-- `call`, `all`, `both`, `waitFor`, `signal`, `waitForSignal`
+- `call`, `Durable.Parallel`, CE `and!`, `waitFor`, `signal`, `waitForSignal`
 - `Workflow<'input,'output>` and `workflow`
 - `Firegrid.clientWith`, `workerWith`, and `testHostWith`
 - examples ported from the Mikhail workflow article shape

@@ -51,14 +51,20 @@ let checkout orderId =
 
 let helloSequence (cities: string) =
     durable {
-        let! greetings = cities.Split(",") |> Array.toList |> List.map (call greetStep) |> all
+        let! greetings =
+            cities.Split(",")
+            |> Array.toList
+            |> List.map (call greetStep)
+            |> Durable.Parallel
 
         return String.concat " | " greetings
     }
 
 let reserveAndGreet orderId =
     durable {
-        let! reservation, greeting = both (call reserveStep orderId) (call greetStep orderId)
+        let! reservation = call reserveStep orderId
+        and! greeting = call greetStep orderId
+
         return reservation + " / " + greeting
     }
 

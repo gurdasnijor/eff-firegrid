@@ -27,13 +27,27 @@ than it needs to be.
 Build a native `firegrid-host` Rust binary that owns systems concerns while the
 high-level authoring surface remains free to evolve.
 
+The codebase should maximize target flexibility. Firegrid should not repeat the
+current JavaScript coupling in Rust form. The durable core must stay portable
+across targets; only narrow adapter layers should know about Node, .NET, native
+Rust crates, local filesystems, process APIs, clocks, network clients, or
+telemetry backends.
+
 Target split:
 
 ```text
-F# / future authoring layer
+Authoring layer
   step / workflow / entity descriptors
   durable authoring ergonomics
   descriptor serialization
+
+Target-agnostic core
+  shared value types
+  codecs
+  durable state machines
+  replay/fold semantics
+  command planning
+  descriptor validation
 
 Rust host
   native S2 client
@@ -42,13 +56,64 @@ Rust host
   timer dispatcher
   process supervision
   telemetry
-
-Rust core library
-  shared codecs
-  durable state machines
-  replay/fold semantics
-  validation model
 ```
+
+## Target-Agnostic Core Requirement
+
+Most of the codebase should be written as target-agnostic core logic.
+
+Target-agnostic means:
+
+- no `Fable.Core.JsInterop` in core modules
+- no Node-specific packages in core modules
+- no direct filesystem, process, environment, clock, network, or telemetry calls
+- no promise-specific APIs such as `Async.AwaitPromise` in core modules
+- no generated JavaScript assumptions in public semantics
+- deterministic functions over explicit input values wherever possible
+- all nondeterminism enters through small port interfaces
+
+Target-specific code belongs behind ports:
+
+```text
+StoragePort
+  append / read / claim / ensure-stream
+
+ClockPort
+  now / sleep-until
+
+ProcessPort
+  run / stream / kill-tree
+
+TelemetryPort
+  span / event / attributes
+
+EnvironmentPort
+  read variable / project secret
+```
+
+Each port can have multiple adapters:
+
+- Fable/Node adapter for current continuity
+- native Rust adapter for the new host
+- .NET adapter if we later want a normal .NET/F# runtime
+- fake/in-memory adapter for deterministic tests
+
+Compile contracts should reflect this split:
+
+```text
+pure core
+  dotnet build
+  dotnet fable --lang javascript
+  dotnet fable --lang rust, where supported
+  cargo test for Rust-native core ports
+
+target adapters
+  adapter-specific compile and integration tests
+```
+
+The first rule for new work: if a feature can be expressed in target-agnostic
+core, put it there. Only put code in the Rust host, Fable/Node layer, or future
+.NET host when it is genuinely about that target.
 
 ## Native Dependencies
 
@@ -102,7 +167,7 @@ Acceptance:
 
 ### Phase 2: Rust S2 Substrate
 
-Port the current durable S2 substrate concepts from F#:
+Implement a native Rust adapter for the storage port using `s2-sdk`.
 
 - ensure log and inbox streams
 - claim ownership with fencing
@@ -114,10 +179,11 @@ Acceptance:
 
 - Rust tests cover the same substrate invariants as the F# S2 substrate proof
 - S2 SDK usage is native Rust only
+- target-agnostic storage semantics remain independent of `s2-sdk`
 
-### Phase 3: Rust Durable Core
+### Phase 3: Target-Agnostic Durable Core
 
-Port only the stable pure semantics:
+Extract or port only the stable pure semantics:
 
 - step records
 - codecs
@@ -130,10 +196,12 @@ Acceptance:
 
 - Rust unit tests mirror the meaningful F# proof properties
 - no JS interop appears in durable core
+- the same semantics have a clear path to Fable Rust or native Rust validation
 
 ### Phase 4: Process Runner
 
-Add a process boundary using `processkit` or a comparably strong native runner.
+Add a native Rust adapter for the process port using `processkit` or a
+comparably strong native runner.
 
 Required behavior:
 
@@ -149,6 +217,7 @@ Acceptance:
 - nonzero exit, timeout, and process-tree kill tests pass
 - no shell invocation is required for normal commands
 - process output limits are enforced
+- workflow semantics call a process port, not `processkit` directly
 
 ### Phase 5: Descriptor Boundary
 
@@ -173,6 +242,7 @@ Acceptance:
 - a workflow descriptor can be loaded by the Rust host
 - a process-backed step can be invoked by the Rust host
 - host output/status can be queried without Fable/Node
+- descriptor validation is target-agnostic
 
 ## Fable Rust Position
 
@@ -199,6 +269,8 @@ Those pieces should be Rust-native.
   both?
 - Which parts of the current F# durable core are worth porting directly versus
   redesigning around Rust types?
+- What is the minimal first `core` compile contract that should be enforced in
+  CI across more than one target?
 - Should the first process runner use `processkit` immediately or start with
   `tokio::process` and graduate once semantics are clear?
 - How much of the proof harness should move to Rust tests versus remaining as

@@ -2,41 +2,30 @@ module FiregridRust.Program
 
 open Eff.Foundation.Durable
 
-let summarizeNeed need =
-    match need with
-    | NeedsActivities pending ->
-        let hasCharge =
-            pending
-            |> List.exists (fun (_, activity) -> activity.Name = "charge" && activity.Input = "reserved:order-1")
+let isActivityCommand name input record =
+    match record with
+    | DurableIrCommitCommand(DurableIrCommandCallActivity(_, activity)) ->
+        activity.Name = name && activity.Input = input
+    | _ -> false
 
-        let hasNotify =
-            pending
-            |> List.exists (fun (_, activity) -> activity.Name = "notify" && activity.Input = "order-1")
+let summarizePlan plan =
+    match plan with
+    | InvalidDurableIrAppPlan _ -> "invalid-app"
+    | DurableIrPlanWorkflowNotFound _ -> "missing-workflow"
+    | DurableIrPlanReady ready ->
+        match ready with
+        | DurableIrPlanComplete _ -> "complete"
+        | DurableIrPlanWaiting _ -> "waiting"
+        | DurableIrPlanCommit records ->
+            let hasCharge =
+                records |> List.exists (isActivityCommand "charge" "reserved:order-1")
 
-        if pending.Length = 2 && hasCharge && hasNotify then
-            "blocked:grouped-activities"
-        else
-            "blocked:other"
-    | NeedsActivity activity when activity.Name = "charge" && activity.Input = "reserved:order-1" ->
-        "blocked:dependent-activity"
-    | NeedsActivity activity when activity.Name = "reserve" && activity.Input = "order-1" -> "blocked:activity"
-    | _ -> "blocked:other"
+            let hasNotify = records |> List.exists (isActivityCommand "notify" "order-1")
 
-let summarizeOutcome (outcome: Outcome<Value>) =
-    match outcome with
-    | Done _ -> "done"
-    | Blocked(_, need) -> summarizeNeed need
-
-let summarizeWorkflowReplay replay =
-    match replay with
-    | InvalidWorkflow _ -> "invalid-workflow"
-    | ValidWorkflow outcome -> summarizeOutcome outcome
-
-let summarizeAppReplay replay =
-    match replay with
-    | InvalidDurableIrApp _ -> "invalid-app"
-    | DurableIrWorkflowNotFound _ -> "missing-workflow"
-    | DurableIrWorkflowReplay workflowReplay -> summarizeWorkflowReplay workflowReplay
+            if records.Length = 4 && hasCharge && hasNotify then
+                "commit:grouped-activities"
+            else
+                "commit:other"
 
 let replaySummary () =
     let draft, reservation =
@@ -55,7 +44,7 @@ let replaySummary () =
     let history =
         History.empty |> History.append (ActivityCompleted(OpId 0, "reserved:order-1"))
 
-    DurableIrApp.replayWorkflow "checkout" history app |> summarizeAppReplay
+    DurableIrApp.planWorkflow 123L "checkout" history app |> summarizePlan
 
 [<EntryPoint>]
 let main _ =

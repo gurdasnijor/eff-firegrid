@@ -142,6 +142,19 @@ names and per-workflow IR issues, then call `DurableIrApp.replayWorkflow` by
 workflow name. That keeps runtime admission centralized instead of asking every
 host loop to remember separate validate/find/replay steps.
 
+`DurableIrApp.planWorkflow` is the next host boundary. It validates the app,
+finds the named workflow, replays it against history, and returns one of:
+
+- complete value
+- commit records for missing history and host commands
+- waiting state when no new commit is required
+- app/workflow admission failure
+
+This is intentionally separate from the existing `DurableStepper` path. The old
+stepper remains useful for the current runtime, but the Rust-targeted path needs
+a portable command plan that compiles without S2 substrate modules or JS
+interop.
+
 Migration direction:
 
 - keep the existing `durable {}` CE working on .NET/Fable JS while the runtime

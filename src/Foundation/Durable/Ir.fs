@@ -51,6 +51,26 @@ type DurableIrAppReplay =
     | DurableIrWorkflowNotFound of string
     | DurableIrWorkflowReplay of DurableWorkflowReplay
 
+type DurableIrCommand =
+    | DurableIrCommandCallActivity of OpId * Activity
+    | DurableIrCommandScheduleTimer of OpId * deadline: int64
+    | DurableIrCommandCancelTimer of OpId
+    | DurableIrCommandWriteLog of OpId * message: string
+
+type DurableIrCommitRecord =
+    | DurableIrCommitHistory of Event
+    | DurableIrCommitCommand of DurableIrCommand
+
+type DurableIrPlan =
+    | DurableIrPlanComplete of Value
+    | DurableIrPlanCommit of DurableIrCommitRecord list
+    | DurableIrPlanWaiting of OpId * Need
+
+type DurableIrAppPlan =
+    | InvalidDurableIrAppPlan of DurableIrAppIssue list
+    | DurableIrPlanWorkflowNotFound of string
+    | DurableIrPlanReady of DurableIrPlan
+
 [<RequireQualifiedAccess>]
 module ValueExpr =
     let literal value = Literal value
@@ -315,6 +335,110 @@ module DurableIr =
 
         loop program.Operations
 
+    let private events history = History.toList history
+
+    let private hasActivityCall opId activity history =
+        events history
+        |> List.exists (function
+            | ActivityCalled(id, called) when id = opId && called = activity -> true
+            | _ -> false)
+
+    let private hasTimerCreated opId deadline history =
+        events history
+        |> List.exists (function
+            | TimerCreated(id, created) when id = opId && created = deadline -> true
+            | _ -> false)
+
+    let private hasCurrentTime opId history =
+        History.currentTime opId history |> Option.isSome
+
+    let private hasLog opId message history = History.logEmitted opId message history
+
+    let private hasTimerCanceled opId history = History.timerCanceled opId history
+
+    let private history event = DurableIrCommitHistory event
+
+    let private command command = DurableIrCommitCommand command
+
+    let private activityRecords opId activity =
+        [ history (ActivityCalled(opId, activity))
+          command (DurableIrCommandCallActivity(opId, activity)) ]
+
+    let private timerRecords opId deadline =
+        [ history (TimerCreated(opId, deadline))
+          command (DurableIrCommandScheduleTimer(opId, deadline)) ]
+
+    let private cancelTimerRecords opId =
+        [ history (TimerCanceled opId); command (DurableIrCommandCancelTimer opId) ]
+
+    let private currentTimeRecords opId timestamp =
+        [ history (CurrentTimeRecorded(opId, timestamp)) ]
+
+    let private logRecords opId message =
+        [ history (LogEmitted(opId, message))
+          command (DurableIrCommandWriteLog(opId, message)) ]
+
+    let private missingForTask history (opId, task) =
+        match task with
+        | RaceActivity activity ->
+            if hasActivityCall opId activity history then
+                []
+            else
+                activityRecords opId activity
+        | RaceEvent(Timer deadline) ->
+            if hasTimerCreated opId deadline history then
+                []
+            else
+                timerRecords opId deadline
+        | RaceEvent(Signal _) -> []
+
+    let private missingForNeed timestamp history opId need =
+        match need with
+        | NeedsActivity requested ->
+            if hasActivityCall opId requested history then
+                []
+            else
+                activityRecords opId requested
+        | NeedsActivities pending ->
+            pending
+            |> List.collect (fun (id, requested) ->
+                if hasActivityCall id requested history then
+                    []
+                else
+                    activityRecords id requested)
+        | NeedsEvent(Timer deadline) ->
+            if hasTimerCreated opId deadline history then
+                []
+            else
+                timerRecords opId deadline
+        | NeedsEvent(Signal _) -> []
+        | NeedsRace pending -> pending |> List.collect (missingForTask history)
+        | NeedsTimerCancellation timers ->
+            timers
+            |> List.collect (fun timerId ->
+                if hasTimerCanceled timerId history then
+                    []
+                else
+                    cancelTimerRecords timerId)
+        | NeedsCurrentTime ->
+            if hasCurrentTime opId history then
+                []
+            else
+                currentTimeRecords opId timestamp
+        | NeedsLog message ->
+            if hasLog opId message history then
+                []
+            else
+                logRecords opId message
+
+    let plan timestamp history program =
+        match replay history program with
+        | Done value -> DurableIrPlanComplete value
+        | Blocked(opId, need) ->
+            match missingForNeed timestamp history opId need with
+            | [] -> DurableIrPlanWaiting(opId, need)
+            | records -> DurableIrPlanCommit records
+
 [<RequireQualifiedAccess>]
 module DurableWorkflow =
     let create name (program: DurableIr) : DurableWorkflow = { Name = name; Program = program }
@@ -379,3 +503,11 @@ module DurableIrApp =
             | Some workflow -> DurableWorkflow.replay history workflow |> DurableIrWorkflowReplay
             | None -> DurableIrWorkflowNotFound name
         | issues -> InvalidDurableIrApp issues
+
+    let planWorkflow timestamp name history app =
+        match validate app with
+        | [] ->
+            match tryFindWorkflow name app with
+            | Some workflow -> DurableIr.plan timestamp history workflow.Program |> DurableIrPlanReady
+            | None -> DurableIrPlanWorkflowNotFound name
+        | issues -> InvalidDurableIrAppPlan issues

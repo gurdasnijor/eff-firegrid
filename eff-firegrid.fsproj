@@ -32,7 +32,13 @@
     <Compile Include="src/Foundation/Durable/TimerAdapter.fs" />
     <Compile Include="src/Foundation/Durable/Host.fs" />
     <Compile Include="src/Foundation/Durable/Runtime.fs" />
-    <Compile Include="src/Foundation/Durable/App.fs" />
+    <Compile Include="src/Foundation/Durable/App/Storage.fs" />
+    <Compile Include="src/Foundation/Durable/App/Definitions.fs" />
+    <Compile Include="src/Foundation/Durable/App/DurableFacade.fs" />
+    <Compile Include="src/Foundation/Durable/App/Environment.fs" />
+    <Compile Include="src/Foundation/Durable/App/Client.fs" />
+    <Compile Include="src/Foundation/Durable/App/Worker.fs" />
+    <Compile Include="src/Foundation/Durable/App/Builder.fs" />
     <Compile Include="src/Proofs/Proof.fs" />
     <Compile Include="src/Proofs/Reports.fs" />
     <Compile Include="src/Proofs/S2Lite.fs" />

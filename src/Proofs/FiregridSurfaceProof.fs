@@ -12,6 +12,7 @@ module FiregridSurfaceProof =
           LocalHostCompleted: bool
           LocalHostReportedWaiting: bool
           LocalHostCapturedSteps: bool
+          LocalHostAssertions: bool
           ClientResultReadsCompletion: bool
           SignalCompletesWorkflow: bool
           AppCapturedDescriptors: bool }
@@ -121,6 +122,18 @@ module FiregridSurfaceProof =
                 let! localOutput = localHost.run checkoutWorkflow "local-order"
                 let! localRun = localHost.inspect checkoutWorkflow "local-inspect"
                 let! localApprovalStatus = localHost.tryRun approvalWorkflow "local-approval"
+
+                let! localCompletedAssertion =
+                    localHost.expectCompleted checkoutWorkflow "local-expect" "charged:reserved:local-expect"
+
+                let! localWaitingAssertion =
+                    localHost.expectWaiting approvalWorkflow "local-wait" "signal:firegrid-approved"
+
+                let! localStepsAssertion =
+                    localHost.expectSteps checkoutWorkflow "local-steps" [ Step.name reserveStep; Step.name chargeStep ]
+
+                let! localStepRanOnceAssertion = localHost.expectStepRanOnce checkoutWorkflow "local-once" reserveStep
+
                 let! checkoutStart = host.client.startWith checkoutClientId checkoutWorkflow "order-3"
                 let! approvalStart = host.client.startWith approvalId approvalWorkflow "order-4"
 
@@ -162,6 +175,14 @@ module FiregridSurfaceProof =
                     (localRun.Status = WorkflowStatus.Completed "charged:reserved:local-inspect")
                     && ((localRun.Steps |> List.map (fun step -> step.Name)) = expectedLocalSteps)
 
+                let localHostAssertions =
+                    localCompletedAssertion.Status = WorkflowStatus.Completed "charged:reserved:local-expect"
+                    && localWaitingAssertion.Status = WorkflowStatus.Waiting "signal:firegrid-approved"
+                    && (localStepsAssertion.Steps |> List.map (fun step -> step.Name)) = expectedLocalSteps
+                    && (localStepRanOnceAssertion.Steps
+                        |> List.filter (fun step -> step.Name = Step.name reserveStep)
+                        |> List.length) = 1
+
                 let expectedAppSteps: string list =
                     [ "firegrid-reserve"; "firegrid-charge"; "firegrid-hello" ]
 
@@ -182,6 +203,7 @@ module FiregridSurfaceProof =
                       LocalHostCompleted = localHostCompleted
                       LocalHostReportedWaiting = localHostReportedWaiting
                       LocalHostCapturedSteps = localHostCapturedSteps
+                      LocalHostAssertions = localHostAssertions
                       ClientResultReadsCompletion = clientResultReadsCompletion
                       SignalCompletesWorkflow = signalCompletesWorkflow
                       AppCapturedDescriptors = appCapturedDescriptors }
@@ -196,6 +218,7 @@ module FiregridSurfaceProof =
                           "firegrid.local_host", string result.LocalHostCompleted
                           "firegrid.local_waiting", string result.LocalHostReportedWaiting
                           "firegrid.local_steps", string result.LocalHostCapturedSteps
+                          "firegrid.local_assertions", string result.LocalHostAssertions
                           "firegrid.client_result", string result.ClientResultReadsCompletion
                           "firegrid.signal", string result.SignalCompletesWorkflow
                           "firegrid.descriptors", string result.AppCapturedDescriptors ]
@@ -227,6 +250,8 @@ module FiregridSurfaceProof =
                       result.LocalHostReportedWaiting)
                   v.Expect.Workload "local Firegrid test host captures public step trace" (fun result ->
                       result.LocalHostCapturedSteps)
+                  v.Expect.Workload "local Firegrid test host assertions are ergonomic public APIs" (fun result ->
+                      result.LocalHostAssertions)
                   v.Expect.Workload "public client reads workflow result" (fun result ->
                       result.ClientResultReadsCompletion)
                   v.Expect.Workload "public client signal completes waiting workflow" (fun result ->
@@ -248,6 +273,7 @@ module FiregridSurfaceProof =
                                 "LocalHostCompleted"
                                 "LocalHostReportedWaiting"
                                 "LocalHostCapturedSteps"
+                                "LocalHostAssertions"
                                 "ClientResultReadsCompletion"
                                 "SignalCompletesWorkflow"
                                 "AppCapturedDescriptors" ]

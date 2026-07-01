@@ -155,6 +155,8 @@ module Step =
 
     let define name handler : Step<string, string> = defineWith name id id id id handler
 
+    let name step = ActivityName.value step.Activity.Name
+
     let toActivity step = step.Activity
 
 [<RequireQualifiedAccess>]
@@ -488,6 +490,73 @@ type LocalTestHost internal (app: FiregridApp) =
             | WorkflowStatus.Running -> return failwith "local workflow did not complete: still running"
             | WorkflowStatus.Waiting need -> return failwith ("local workflow did not complete: waiting for " + need)
             | WorkflowStatus.Failed error -> return failwith ("local workflow failed: " + error)
+        }
+
+    member this.expectCompleted workflow input expected =
+        async {
+            let! run = this.inspect workflow input
+
+            match run.Status with
+            | WorkflowStatus.Completed actual when actual = expected -> return run
+            | WorkflowStatus.Completed actual ->
+                return failwithf "expected local workflow to complete with %A, got %A" expected actual
+            | WorkflowStatus.NotFound -> return failwith "expected local workflow to complete, got not found"
+            | WorkflowStatus.Running -> return failwith "expected local workflow to complete, got running"
+            | WorkflowStatus.Waiting need ->
+                return failwith ("expected local workflow to complete, got waiting for " + need)
+            | WorkflowStatus.Failed error ->
+                return failwith ("expected local workflow to complete, got failure: " + error)
+        }
+
+    member this.expectWaiting workflow input expectedNeed =
+        async {
+            let! run = this.inspect workflow input
+
+            match run.Status with
+            | WorkflowStatus.Waiting actual when actual = expectedNeed -> return run
+            | WorkflowStatus.Waiting actual ->
+                return failwithf "expected local workflow to wait for %s, got %s" expectedNeed actual
+            | WorkflowStatus.Completed actual ->
+                return failwithf "expected local workflow to wait for %s, got completed with %A" expectedNeed actual
+            | WorkflowStatus.NotFound ->
+                return failwith ("expected local workflow to wait for " + expectedNeed + ", got not found")
+            | WorkflowStatus.Running ->
+                return failwith ("expected local workflow to wait for " + expectedNeed + ", got running")
+            | WorkflowStatus.Failed error ->
+                return
+                    failwith (
+                        "expected local workflow to wait for "
+                        + expectedNeed
+                        + ", got failure: "
+                        + error
+                    )
+        }
+
+    member this.expectSteps workflow input expectedStepNames =
+        async {
+            let! run = this.inspect workflow input
+            let actual = run.Steps |> List.map (fun step -> step.Name)
+
+            if actual = expectedStepNames then
+                return run
+            else
+                return failwithf "expected local workflow steps %A, got %A" expectedStepNames actual
+        }
+
+    member this.expectStepRanOnce workflow input (step: Step<'stepInput, 'stepOutput>) =
+        async {
+            let! run = this.inspect workflow input
+            let expected = Step.name step
+
+            let count =
+                run.Steps
+                |> List.filter (fun execution -> execution.Name = expected)
+                |> List.length
+
+            if count = 1 then
+                return run
+            else
+                return failwithf "expected local step %s to run once, got %d runs" expected count
         }
 
 [<RequireQualifiedAccess>]

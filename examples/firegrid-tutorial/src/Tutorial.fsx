@@ -104,6 +104,9 @@ let localPreview =
         let! receipt = localHost.run checkoutWorkflow "order-123"
         let! run = localHost.inspect checkoutWorkflow "order-124"
         let! approvalStatus = localHost.tryRun approvalWorkflow "order-124"
+        let! _ = localHost.expectCompleted checkoutWorkflow "order-125" "charged:reserved:order-125"
+        let! _ = localHost.expectWaiting approvalWorkflow "order-126" "signal:approved"
+        let! _ = localHost.expectSteps checkoutWorkflow "order-127" [ Step.name reserveStep; Step.name chargeStep ]
 
         printfn "local checkout: %s" receipt
         printfn "local checkout steps: %A" (run.Steps |> List.map (fun step -> step.Name))

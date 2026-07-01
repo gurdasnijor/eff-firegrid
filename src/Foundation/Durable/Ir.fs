@@ -6,11 +6,17 @@ type ValueExpr =
     | EventResult of OpId
     | CurrentTimeResult of OpId
 
+type ActivityCallExpr =
+    { CallOpId: OpId
+      CallName: string
+      CallInput: ValueExpr }
+
 type IrOperation =
-    | CallActivity of OpId * name: string * input: ValueExpr
-    | AwaitEvent of OpId * EventKey
-    | ReadCurrentTime of OpId
-    | WriteLog of OpId * message: string
+    | IrCallActivity of OpId * name: string * input: ValueExpr
+    | IrCallActivities of ActivityCallExpr list
+    | IrAwaitEvent of OpId * EventKey
+    | IrReadCurrentTime of OpId
+    | IrWriteLog of OpId * message: string
 
 type DurableIr =
     { Operations: IrOperation list
@@ -64,13 +70,24 @@ module DurableIr =
 
         opId, next
 
-    let callActivity opId name input = CallActivity(opId, name, input)
+    let private allocateMany count draft =
+        let rec loop remaining current ids =
+            if remaining <= 0 then
+                ids, { draft with NextOpId = current }
+            else
+                loop (remaining - 1) (OpId.next current) (ids @ [ current ])
 
-    let awaitEvent opId key = AwaitEvent(opId, key)
+        loop count draft.NextOpId []
 
-    let readCurrentTime opId = ReadCurrentTime opId
+    let callActivity opId name input = IrCallActivity(opId, name, input)
 
-    let writeLog opId message = WriteLog(opId, message)
+    let callActivities calls = IrCallActivities calls
+
+    let awaitEvent opId key = IrAwaitEvent(opId, key)
+
+    let readCurrentTime opId = IrReadCurrentTime opId
+
+    let writeLog opId message = IrWriteLog(opId, message)
 
     let appendCallActivity name input draft =
         let opId, draft = allocate draft
@@ -78,6 +95,21 @@ module DurableIr =
         { draft with
             Operations = draft.Operations @ [ callActivity opId name input ] },
         ValueExpr.activityResult opId
+
+    let appendCallActivities calls draft =
+        let calls = calls |> List.ofSeq
+        let opIds, draft = allocateMany calls.Length draft
+
+        let planned =
+            List.zip opIds calls
+            |> List.map (fun (opId, (name, input)) ->
+                { CallOpId = opId
+                  CallName = name
+                  CallInput = input })
+
+        { draft with
+            Operations = draft.Operations @ [ callActivities planned ] },
+        opIds |> List.map ValueExpr.activityResult
 
     let appendAwaitEvent key draft =
         let opId, draft = allocate draft
@@ -101,24 +133,39 @@ module DurableIr =
 
     let private operationId operation =
         match operation with
-        | CallActivity(opId, _, _) -> opId
-        | AwaitEvent(opId, _) -> opId
-        | ReadCurrentTime opId -> opId
-        | WriteLog(opId, _) -> opId
+        | IrCallActivity(opId, _, _) -> opId
+        | IrCallActivities calls ->
+            calls
+            |> List.tryHead
+            |> Option.map (fun call -> call.CallOpId)
+            |> Option.defaultValue OpId.zero
+        | IrAwaitEvent(opId, _) -> opId
+        | IrReadCurrentTime opId -> opId
+        | IrWriteLog(opId, _) -> opId
 
-    let private operationOutput operation =
+    let private operationIds operation =
         match operation with
-        | CallActivity(opId, _, _) -> Some(ActivityResult opId)
-        | AwaitEvent(opId, _) -> Some(EventResult opId)
-        | ReadCurrentTime opId -> Some(CurrentTimeResult opId)
-        | WriteLog _ -> None
+        | IrCallActivity(opId, _, _) -> [ opId ]
+        | IrCallActivities calls -> calls |> List.map (fun call -> call.CallOpId)
+        | IrAwaitEvent(opId, _) -> [ opId ]
+        | IrReadCurrentTime opId -> [ opId ]
+        | IrWriteLog(opId, _) -> [ opId ]
 
-    let private operationInput operation =
+    let private operationOutputs operation =
         match operation with
-        | CallActivity(_, _, input) -> Some input
-        | AwaitEvent _
-        | ReadCurrentTime _
-        | WriteLog _ -> None
+        | IrCallActivity(opId, _, _) -> [ ActivityResult opId ]
+        | IrCallActivities calls -> calls |> List.map (fun call -> ActivityResult call.CallOpId)
+        | IrAwaitEvent(opId, _) -> [ EventResult opId ]
+        | IrReadCurrentTime opId -> [ CurrentTimeResult opId ]
+        | IrWriteLog _ -> []
+
+    let private operationInputs operation =
+        match operation with
+        | IrCallActivity(_, _, input) -> [ operationId operation, input ]
+        | IrCallActivities calls -> calls |> List.map (fun call -> call.CallOpId, call.CallInput)
+        | IrAwaitEvent _
+        | IrReadCurrentTime _
+        | IrWriteLog _ -> []
 
     let private expressionOpId expression =
         match expression with
@@ -136,7 +183,7 @@ module DurableIr =
         | _, Some source -> [ MissingValueSource source ]
 
     let validate (program: DurableIr) =
-        let allOutputs = program.Operations |> List.choose operationOutput
+        let allOutputs = program.Operations |> List.collect operationOutputs
 
         let rec loop expected seen availableOutputs issues operations =
             match operations with
@@ -146,32 +193,44 @@ module DurableIr =
 
                 issues @ returnIssues
             | operation :: rest ->
-                let opId = operationId operation
-                let expectedOpId = OpId expected
+                let opIds = operationIds operation
 
                 let sequenceIssues =
-                    let continuityIssues =
-                        if opId <> expectedOpId then
-                            [ NonContiguousOperationId(expectedOpId, opId) ]
-                        else
-                            []
+                    let rec validateIds offset seenIds issues ids =
+                        match ids with
+                        | [] -> issues
+                        | actual :: rest ->
+                            let expected = OpId(expected + offset)
 
-                    if List.contains opId seen then
-                        continuityIssues @ [ DuplicateOperationId opId ]
-                    else
-                        continuityIssues
+                            let continuityIssues =
+                                if actual <> expected then
+                                    issues @ [ NonContiguousOperationId(expected, actual) ]
+                                else
+                                    issues
+
+                            let duplicateIssues =
+                                if List.contains actual seen || List.contains actual seenIds then
+                                    continuityIssues @ [ DuplicateOperationId actual ]
+                                else
+                                    continuityIssues
+
+                            validateIds (offset + 1) (seenIds @ [ actual ]) duplicateIssues rest
+
+                    validateIds 0 [] [] opIds
 
                 let inputIssues =
-                    match operationInput operation with
-                    | Some input -> validateExpression allOutputs availableOutputs opId input
-                    | None -> []
+                    operationInputs operation
+                    |> List.collect (fun (consumer, input) ->
+                        validateExpression allOutputs availableOutputs consumer input)
 
-                let availableOutputs =
-                    match operationOutput operation with
-                    | Some output -> availableOutputs @ [ output ]
-                    | None -> availableOutputs
+                let availableOutputs = availableOutputs @ operationOutputs operation
 
-                loop (expected + 1) (seen @ [ opId ]) availableOutputs (issues @ sequenceIssues @ inputIssues) rest
+                loop
+                    (expected + opIds.Length)
+                    (seen @ opIds)
+                    availableOutputs
+                    (issues @ sequenceIssues @ inputIssues)
+                    rest
 
         loop 0 [] [] [] program.Operations
 
@@ -189,22 +248,42 @@ module DurableIr =
 
     let private replayOperation history operation =
         match operation with
-        | CallActivity(opId, name, input) ->
+        | IrCallActivity(opId, name, input) ->
             match History.completed opId history with
             | Some _ -> None
             | None ->
                 match value history input with
                 | Some resolvedInput -> Some(Blocked(opId, NeedsActivity { Name = name; Input = resolvedInput }))
                 | None -> Some(Blocked(opId, NeedsActivity { Name = name; Input = "" }))
-        | AwaitEvent(opId, key) ->
+        | IrCallActivities calls ->
+            let missing =
+                calls
+                |> List.choose (fun call ->
+                    match History.completed call.CallOpId history with
+                    | Some _ -> None
+                    | None ->
+                        match value history call.CallInput with
+                        | Some resolvedInput ->
+                            Some(
+                                call.CallOpId,
+                                { Name = call.CallName
+                                  Input = resolvedInput }
+                            )
+                        | None -> Some(call.CallOpId, { Name = call.CallName; Input = "" }))
+
+            if List.isEmpty missing then
+                None
+            else
+                Some(Blocked(operationId operation, NeedsActivities missing))
+        | IrAwaitEvent(opId, key) ->
             match History.resolved opId key history with
             | Some _ -> None
             | None -> Some(Blocked(opId, NeedsEvent key))
-        | ReadCurrentTime opId ->
+        | IrReadCurrentTime opId ->
             match History.currentTime opId history with
             | Some _ -> None
             | None -> Some(Blocked(opId, NeedsCurrentTime))
-        | WriteLog(opId, message) ->
+        | IrWriteLog(opId, message) ->
             if History.logEmitted opId message history then
                 None
             else

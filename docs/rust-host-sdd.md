@@ -109,10 +109,11 @@ type ValueExpr =
     | CurrentTimeResult of OpId
 
 type IrOperation =
-    | CallActivity of OpId * name: string * input: ValueExpr
-    | AwaitEvent of OpId * EventKey
-    | ReadCurrentTime of OpId
-    | WriteLog of OpId * message: string
+    | IrCallActivity of OpId * name: string * input: ValueExpr
+    | IrCallActivities of ActivityCallExpr list
+    | IrAwaitEvent of OpId * EventKey
+    | IrReadCurrentTime of OpId
+    | IrWriteLog of OpId * message: string
 
 type DurableIr =
     { Operations: IrOperation list
@@ -122,6 +123,12 @@ type DurableIr =
 This representation is data, not closures. It can be serialized, inspected,
 lowered to host commands, and compiled through Fable Rust. The current Fable
 Rust target uses `DurableIr` as the first compileable durable core slice.
+
+The IR now supports grouped activity scheduling through `IrCallActivities`.
+That is the portable replacement for continuation-held `performAll` semantics:
+the F# authoring layer can lower independent activity calls into one operation,
+and replay produces one `NeedsActivities` block for the host to dispatch
+together.
 
 Migration direction:
 

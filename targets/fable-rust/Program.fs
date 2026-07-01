@@ -7,10 +7,12 @@ let replaySummary () =
         DurableIr.empty
         |> DurableIr.appendCallActivity "reserve" (ValueExpr.literal "order-1")
 
-    let draft, receipt = draft |> DurableIr.appendCallActivity "charge" reservation
+    let draft, _ =
+        draft
+        |> DurableIr.appendCallActivities [ "charge", reservation; "notify", ValueExpr.literal "order-1" ]
 
     let workflow =
-        draft |> DurableIr.finish receipt |> DurableWorkflow.create "checkout"
+        draft |> DurableIr.finish reservation |> DurableWorkflow.create "checkout"
 
     let history =
         History.empty |> History.append (ActivityCompleted(OpId 0, "reserved:order-1"))
@@ -24,6 +26,20 @@ let replaySummary () =
         | Done _ -> "done"
         | Blocked(_, need) ->
             match need with
+            | NeedsActivities pending ->
+                let hasCharge =
+                    pending
+                    |> List.exists (fun (_, activity) ->
+                        activity.Name = "charge" && activity.Input = "reserved:order-1")
+
+                let hasNotify =
+                    pending
+                    |> List.exists (fun (_, activity) -> activity.Name = "notify" && activity.Input = "order-1")
+
+                if pending.Length = 2 && hasCharge && hasNotify then
+                    "blocked:grouped-activities"
+                else
+                    "blocked:other"
             | NeedsActivity activity when activity.Name = "charge" && activity.Input = "reserved:order-1" ->
                 "blocked:dependent-activity"
             | NeedsActivity activity when activity.Name = "reserve" && activity.Input = "order-1" -> "blocked:activity"

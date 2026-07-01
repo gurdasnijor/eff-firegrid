@@ -29,7 +29,7 @@ The target library should be closer to:
 - normal F# domain functions
 - a thin durable wrapper around those functions
 - first-class typed durable steps
-- a `durable {}` computation expression that reads like `async {}` / `task {}`
+- a `durable {}` computation expression that reads like `async {}`
 - ergonomic local/test hosting
 - S2-backed hosting hidden behind configuration
 - durable actor-like entities only when stateful keyed behavior is needed
@@ -81,7 +81,7 @@ let workflow wishlist = durable {
 
 The durable substitutions are:
 
-- `async` / `task` orchestration body becomes `durable`
+- `async` orchestration body becomes `durable`
 - direct nondeterministic function call becomes `call` of a first-class step
 - `Async.Parallel` / `Task.WhenAll` becomes durable `all`
 - durable external waits use `waitFor`
@@ -182,11 +182,11 @@ Build `Eff.Firegrid` into a consumable F#/Fable infrastructure library for:
 Users should start with ordinary domain functions:
 
 ```fsharp
-let sendEmail email = task {
+let sendEmail email = async {
     return! Email.send email
 }
 
-let agentTurn request = task {
+let agentTurn request = async {
     return! Agent.run request
 }
 ```
@@ -307,17 +307,22 @@ type Step<'input, 'output>
 
 val step :
     name: string ->
-    fn: ('input -> Task<'output>) ->
+    fn: ('input -> Async<'output>) ->
     Step<'input, 'output>
 
-val stepAsync :
+val stepWith :
     name: string ->
+    encodeInput: ('input -> string) ->
+    decodeInput: (string -> 'input) ->
+    encodeOutput: ('output -> string) ->
+    decodeOutput: (string -> 'output) ->
     fn: ('input -> Async<'output>) ->
     Step<'input, 'output>
 ```
 
-Open decision: whether `step` should accept both `Task` and `Async` through
-overloads or whether `task` is the primary user path and `stepAsync` is explicit.
+Task-returning steps are a follow-up. This repository currently targets Fable,
+and the present Fable toolchain used here does not compile the stock F# `task`
+builder or `Async.AwaitTask` path.
 
 ### Workflows
 
@@ -471,7 +476,7 @@ Use services when exposing RPC/tool surfaces:
 
 ```fsharp
 module Greeter =
-    let greet name = task {
+    let greet name = async {
         return $"Hello {name}!"
     }
 
@@ -595,7 +600,7 @@ let claude =
     }
 
 let agentTurnStep =
-    step "agentTurn" (fun request -> task {
+    step "agentTurn" (fun request -> async {
         return! claude.run request
     })
 
@@ -652,7 +657,7 @@ into examples.
 Deliver:
 
 - `Step<'input,'output>`
-- `step` / `stepAsync`
+- `step` / `stepWith`
 - `Durable<'output>` and `durable {}` CE
 - `call`, `send`, `all`, `all2`, `race`, `waitFor`
 - `Workflow<'input,'output>` and `workflow`
@@ -801,7 +806,7 @@ Advanced docs can then explain S2, replay, workers, and proofs.
 
 ## Open Design Decisions
 
-1. Whether `step` should overload `Task`/`Async` or use `step` + `stepAsync`.
+1. How to add Task-returning steps in a way that remains compatible with Fable.
 2. Whether `workflow` should register steps automatically from references or
    require explicit app registration for better diagnostics.
 3. Exact representation of typed codecs across .NET and Fable.

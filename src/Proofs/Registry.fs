@@ -25,4 +25,5 @@ module Registry =
           DurableEnvironmentBootstrapProof.proof
           DurableWorkerLoopProof.proof
           DurableTypedStatusProof.proof
-          DurableRaceFacadeProof.proof ]
+          DurableRaceFacadeProof.proof
+          FiregridSurfaceProof.proof ]

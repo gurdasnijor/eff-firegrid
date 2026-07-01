@@ -15,16 +15,19 @@ let replaySummary () =
     let history =
         History.empty |> History.append (ActivityCompleted(OpId 0, "reserved:order-1"))
 
-    match DurableWorkflow.validate workflow with
-    | _ :: _ -> "invalid"
-    | [] ->
-        match DurableIr.replay history workflow.Program with
+    let replay = DurableWorkflow.replay history workflow
+
+    match replay with
+    | InvalidWorkflow _ -> "invalid"
+    | ValidWorkflow outcome ->
+        match outcome with
         | Done _ -> "done"
-        | Blocked(_,
-                  NeedsActivity { Name = "charge"
-                                  Input = "reserved:order-1" }) -> "blocked:dependent-activity"
-        | Blocked(_, NeedsActivity { Name = "reserve"; Input = "order-1" }) -> "blocked:activity"
-        | Blocked(_, _) -> "blocked:other"
+        | Blocked(_, need) ->
+            match need with
+            | NeedsActivity activity when activity.Name = "charge" && activity.Input = "reserved:order-1" ->
+                "blocked:dependent-activity"
+            | NeedsActivity activity when activity.Name = "reserve" && activity.Input = "order-1" -> "blocked:activity"
+            | _ -> "blocked:other"
 
 [<EntryPoint>]
 let main _ =

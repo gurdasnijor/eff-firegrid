@@ -29,6 +29,10 @@ type DurableIrIssue =
     | MissingValueSource of OpId
     | FutureValueSource of source: OpId * consumer: OpId
 
+type DurableWorkflowReplay =
+    | InvalidWorkflow of DurableIrIssue list
+    | ValidWorkflow of Outcome<Value>
+
 [<RequireQualifiedAccess>]
 module ValueExpr =
     let literal value = Literal value
@@ -228,3 +232,8 @@ module DurableWorkflow =
         let nameIssues = if workflow.Name = "" then [ EmptyWorkflowName ] else []
 
         nameIssues @ DurableIr.validate workflow.Program
+
+    let replay history workflow =
+        match validate workflow with
+        | [] -> DurableIr.replay history workflow.Program |> ValidWorkflow
+        | issues -> InvalidWorkflow issues

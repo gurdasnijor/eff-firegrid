@@ -8,8 +8,8 @@ type Value = string
 type Activity = { Name: string; Input: Value }
 
 type EventKey =
-    | Timer of deadline: int64
-    | Signal of name: string
+    | Timer of int64
+    | Signal of string
 
 type RaceTask =
     | RaceActivity of Activity
@@ -90,17 +90,27 @@ module History =
             | _ -> false)
 
     let resolved opId key (History events) =
+#if FABLE_RUST
         match key with
-        | Timer _ ->
+        | EventKey.Timer _ ->
             events
             |> List.tryPick (function
                 | TimerFired id when id = opId -> Some ""
                 | _ -> None)
-        | Signal name ->
+        | _ -> None
+#else
+        match key with
+        | EventKey.Timer _ ->
+            events
+            |> List.tryPick (function
+                | TimerFired id when id = opId -> Some ""
+                | _ -> None)
+        | EventKey.Signal name ->
             events
             |> List.tryPick (function
                 | SignalReceived(id, signalName, payload) when id = opId && signalName = name -> Some payload
                 | _ -> None)
+#endif
 
     let timerCanceled opId (History events) =
         events
@@ -109,22 +119,42 @@ module History =
             | _ -> false)
 
     let raceWinner (tasks: (int * OpId * RaceTask) list) (History events) =
+#if FABLE_RUST
         let tryMatch event =
             tasks
             |> List.tryPick (fun (index, opId, task) ->
                 match task, event with
                 | RaceActivity _, ActivityCompleted(id, value) when id = opId -> Some(ActivityWon(index, value))
-                | RaceEvent(Timer deadline), TimerFired id when id = opId -> Some(EventWon(index, Timer deadline, ""))
-                | RaceEvent(Signal name), SignalReceived(id, signalName, payload) when id = opId && signalName = name ->
-                    Some(EventWon(index, Signal name, payload))
+                | RaceEvent(EventKey.Timer deadline), TimerFired id when id = opId ->
+                    Some(EventWon(index, EventKey.Timer deadline, ""))
                 | _ -> None)
 
         events |> List.tryPick tryMatch
+#else
+        let tryMatch event =
+            tasks
+            |> List.tryPick (fun (index, opId, task) ->
+                match task, event with
+                | RaceActivity _, ActivityCompleted(id, value) when id = opId -> Some(ActivityWon(index, value))
+                | RaceEvent(EventKey.Timer deadline), TimerFired id when id = opId ->
+                    Some(EventWon(index, EventKey.Timer deadline, ""))
+                | RaceEvent(EventKey.Signal name), SignalReceived(id, signalName, payload) when
+                    id = opId && signalName = name
+                    ->
+                    Some(EventWon(index, EventKey.Signal name, payload))
+                | _ -> None)
+
+        events |> List.tryPick tryMatch
+#endif
 
 [<RequireQualifiedAccess>]
 module Durable =
     let result value = Return value
 
+#if FABLE_RUST
+    let bind _binder _program =
+        failwith "Durable.bind is not yet supported by the Fable Rust target"
+#else
     let bind binder program =
         let rec loop =
             function
@@ -134,9 +164,10 @@ module Durable =
             | Await(key, k) -> Await(key, k >> loop)
             | WhenAny(tasks, k) -> WhenAny(tasks, k >> loop)
             | CurrentTime k -> CurrentTime(k >> loop)
-            | Log(message, k) -> Log(message, k >> loop)
+            | Log(message, k) -> Log(message, fun () -> loop (k ()))
 
         loop program
+#endif
 
     let map mapper program = bind (mapper >> result) program
 
@@ -150,8 +181,29 @@ module Durable =
 
     let currentTime = CurrentTime Return
 
-    let log message = Log(message, Return)
+    let log message = Log(message, fun () -> Return())
 
+#if FABLE_RUST
+    let replay history program =
+        match program with
+        | Return value -> Done value
+        | Perform(activity, _) ->
+            match History.completed OpId.zero history with
+            | Some value -> Done value
+            | None -> Blocked(OpId.zero, NeedsActivity activity)
+        | PerformAll(activities, _) ->
+            let pending =
+                activities
+                |> List.mapi (fun index activity -> OpId.add index OpId.zero, activity)
+
+            Blocked(OpId.zero, NeedsActivities pending)
+        | Await(key, _) -> Blocked(OpId.zero, NeedsEvent key)
+        | WhenAny(tasks, _) ->
+            let pending = tasks |> List.mapi (fun index task -> OpId.add index OpId.zero, task)
+            Blocked(OpId.zero, NeedsRace pending)
+        | CurrentTime _ -> Blocked(OpId.zero, NeedsCurrentTime)
+        | Log(message, _) -> Blocked(OpId.zero, NeedsLog message)
+#else
     let replay history program =
         let rec loop opId current =
             match current with
@@ -204,7 +256,9 @@ module Durable =
                         pending
                         |> List.choose (fun (index, id, task) ->
                             match task with
-                            | RaceEvent(Timer _) when index <> winnerIndex && not (History.timerCanceled id history) ->
+                            | RaceEvent(EventKey.Timer _) when
+                                index <> winnerIndex && not (History.timerCanceled id history)
+                                ->
                                 Some id
                             | _ -> None)
 
@@ -223,3 +277,4 @@ module Durable =
                     Blocked(opId, NeedsLog message)
 
         loop OpId.zero program
+#endif

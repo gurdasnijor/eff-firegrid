@@ -1,0 +1,7 @@
+/.fable/
+/Cargo.lock
+/Program.rs
+/fable_modules/
+/obj/
+/src/
+/target/

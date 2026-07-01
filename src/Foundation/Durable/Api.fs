@@ -24,7 +24,7 @@ module Workflow =
     let waitForSignal name = Signal name |> Durable.await
 
     let sleepUntil deadline =
-        Timer deadline |> Durable.await |> Durable.map ignore
+        Timer deadline |> Durable.await |> Durable.map (fun (_: string) -> ())
 
     let any tasks = tasks |> List.ofSeq |> Durable.whenAny
 
@@ -43,7 +43,8 @@ type DurableBuilder() =
 
     member _.Zero() = Durable.result ()
 
-    member _.Combine(first: Durable<unit>, second: Durable<'a>) = Durable.bind (fun () -> second) first
+    member _.Combine(first: Durable<unit>, second: Durable<'a>) =
+        Durable.bind (fun (_: unit) -> second) first
 
 [<AutoOpen>]
 module DurableSyntax =

@@ -1,13 +1,12 @@
-# Rust Host SDD
+# Fable Rust Target SDD
 
 ## Status
 
-Draft implementation direction for moving Firegrid systems pieces off the
-current Fable/Node runtime and onto a native Rust host.
+Draft implementation direction for making Firegrid's F# durable core compile
+through Fable's Rust target.
 
-This is not a proposal to rewrite the developer-facing API first. It is a
-proposal to extract the volatile systems boundary first: S2 access, process
-supervision, durable host loops, timers, and telemetry.
+This is not a proposal to hand-port the core to Rust. F# remains the source of
+truth for durable semantics while we evaluate Rust as a compile target.
 
 ## Problem
 
@@ -24,19 +23,22 @@ than it needs to be.
 
 ## Goal
 
-Build a native `firegrid-host` Rust binary that owns systems concerns while the
-high-level authoring surface remains free to evolve.
+Make an increasing slice of the existing F# codebase compile through:
 
-The immediate target is a high-quality Rust runtime, not a lowest-common-
-denominator portability exercise. Rust should be allowed to use strong native
-libraries where they improve correctness: `s2-sdk` for S2, `processkit` for
-process supervision, `tokio` for async work, and Rust-native telemetry.
+```sh
+dotnet fable targets/fable-rust/FiregridRust.fsproj --lang rust --outDir targets/fable-rust
+```
 
-The guardrail is simpler than a full port architecture: keep durable semantics
-separate from infrastructure effects. Do not bury process spawning, S2 requests,
-clocks, or telemetry inside replay logic. Use direct Rust modules and traits only
-where they make the Rust implementation clearer or testable. Future
-cross-compilation can be evaluated once the Rust runtime has a coherent shape.
+Then compile and run the generated Rust with Cargo:
+
+```sh
+cd targets/fable-rust
+cargo run
+```
+
+Native Rust crates are still useful for systems boundaries later, especially
+`s2-sdk` and process supervision, but the first priority is F# source
+compatibility with Fable Rust.
 
 Target split:
 
@@ -63,29 +65,27 @@ Rust host
   telemetry
 ```
 
-## Rust-First Design Rules
+## Fable Rust Design Rules
 
-The Rust host should optimize for production correctness and maintainability.
+The F# source should become friendlier to Fable Rust without breaking the
+current .NET/Fable-JS path.
 
 Required rules:
 
-- no Fable/Node interop in the Rust runtime
-- durable replay and fold logic is deterministic Rust code over explicit values
-- S2, process supervision, time, environment, and telemetry live in host modules,
-  not inside replay functions
-- traits are introduced only for real test seams or multiple concrete
-  implementations, not as speculative portability scaffolding
-- descriptor formats are stable and explicit so authoring layers can target the
-  Rust host without linking to its internals
-- runtime errors are typed or structured enough to be useful to operators
-- secrets are never written to logs, durable history, transcripts, or telemetry
+- preserve F# as the durable core source of truth
+- avoid JS interop in files included by `targets/fable-rust/FiregridRust.fsproj`
+- keep target-specific `#if FABLE_RUST` sections small and explicit
+- prefer refactors that also improve the normal F# code
+- do not introduce hand-written Rust equivalents for core semantics while a
+  Fable Rust path is viable
+- expand the Fable Rust target one source file at a time
 
 Non-goals for this phase:
 
-- forcing every module through a target-agnostic port abstraction
-- keeping the existing JavaScript SDK path alive inside the Rust host
-- making Fable Rust a production dependency
-- designing a .NET runtime before the Rust runtime works
+- hand-porting durable core modules to Rust
+- forcing the whole current repo through Fable Rust immediately
+- pretending Fable Rust can currently lower every F# continuation pattern
+- replacing the production runtime before the compile target is credible
 
 ## Native Dependencies
 

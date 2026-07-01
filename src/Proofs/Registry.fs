@@ -26,4 +26,5 @@ module Registry =
           DurableWorkerLoopProof.proof
           DurableTypedStatusProof.proof
           DurableRaceFacadeProof.proof
-          DurableProductionUsecasesProof.proof ]
+          DurableProductionUsecasesProof.proof
+          DurableWorkerServiceLoopProof.proof ]

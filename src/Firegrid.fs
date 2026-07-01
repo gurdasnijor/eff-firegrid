@@ -21,11 +21,16 @@ type Durable<'output> =
     | Program of Eff.Foundation.Durable.Durable<'output>
     | StepCall of Activity: Eff.Foundation.Durable.Activity * Decode: (Payload -> 'output)
 
+type internal StepRegistration =
+    { Name: string
+      Run: Payload -> Async<Payload> }
+
 type FiregridApp =
     private
         { App: DurableApp
           Steps: string list
-          Workflows: string list }
+          Workflows: string list
+          StepRegistrations: StepRegistration list }
 
 type Storage = private { Inner: DurableStorage }
 
@@ -74,6 +79,38 @@ module private Status =
         | DurableAppTypedWorkflowStatus.Waiting need -> WorkflowStatus.Waiting(string need)
         | DurableAppTypedWorkflowStatus.Completed output -> WorkflowStatus.Completed output
         | DurableAppTypedWorkflowStatus.Failed failure -> WorkflowStatus.Failed(string failure)
+
+module private Local =
+    let currentTimeMillis () =
+        System.DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+
+    let private activityDescription (activity: Eff.Foundation.Durable.Activity) = "activity:" + activity.Name
+
+    let private eventDescription =
+        function
+        | EventKey.Timer deadline -> "timer:" + string deadline
+        | EventKey.Signal name -> "signal:" + name
+
+    let private raceTaskDescription (task: RaceTask) =
+        match task with
+        | RaceActivity activity -> activityDescription activity
+        | RaceEvent key -> eventDescription key
+
+    let waitingOn (need: Need) =
+        match need with
+        | NeedsActivity activity -> activityDescription activity
+        | NeedsActivities activities ->
+            activities
+            |> List.map (fun (_, activity: Eff.Foundation.Durable.Activity) -> activityDescription activity)
+            |> String.concat ","
+        | NeedsEvent key -> eventDescription key
+        | NeedsRace tasks ->
+            tasks
+            |> List.map (fun (_, task) -> raceTaskDescription task)
+            |> String.concat ","
+        | NeedsTimerCancellation timers -> "timer-cancellation:" + string timers.Length
+        | NeedsCurrentTime -> "current-time"
+        | NeedsLog message -> "log:" + message
 
 type DurableBuilder() =
     member _.Return value = DurableProgram.result value
@@ -141,12 +178,24 @@ module FiregridApp =
     let empty =
         { App = DurableApp.empty
           Steps = []
-          Workflows = [] }
+          Workflows = []
+          StepRegistrations = [] }
 
     let addStep (step: Step<'input, 'output>) app =
+        let registration =
+            { Name = ActivityName.value step.Activity.Name
+              Run =
+                fun payload ->
+                    async {
+                        let input = step.Activity.DecodeInput payload
+                        let! output = step.Activity.Handler input
+                        return step.Activity.EncodeOutput output
+                    } }
+
         { app with
             App = DurableApp.addActivity step.Activity app.App
-            Steps = app.Steps @ [ ActivityName.value step.Activity.Name ] }
+            Steps = app.Steps @ [ registration.Name ]
+            StepRegistrations = app.StepRegistrations @ [ registration ] }
 
     let addWorkflow (workflow: Workflow<'input, 'output>) app =
         { app with
@@ -271,6 +320,123 @@ type TestHost internal (client: Client, worker: Worker) =
             | WorkflowStatus.Failed error -> return failwith ("workflow failed: " + error)
         }
 
+type LocalTestHost internal (app: FiregridApp) =
+    let steps =
+        app.StepRegistrations
+        |> List.map (fun registration -> registration.Name, registration.Run)
+        |> Map.ofList
+
+    let workflowIsRegistered (workflow: Workflow<'input, 'output>) =
+        app.Workflows |> List.contains (WorkflowName.value workflow.Workflow.Name)
+
+    let runActivity (activity: Eff.Foundation.Durable.Activity) =
+        async {
+            match Map.tryFind activity.Name steps with
+            | None -> return Error("missing local step: " + activity.Name)
+            | Some run ->
+                try
+                    let! output = run activity.Input
+                    return Ok output
+                with error ->
+                    return Error("local step failed: " + activity.Name + ": " + error.Message)
+        }
+
+    let rec advance history program =
+        async {
+            match Eff.Foundation.Durable.Durable.replay history program with
+            | Done output -> return WorkflowStatus.Completed output
+            | Blocked(opId, NeedsActivity activity) ->
+                let! result = runActivity activity
+
+                match result with
+                | Ok output ->
+                    let history = History.append (ActivityCompleted(opId, output)) history
+                    return! advance history program
+                | Error error -> return WorkflowStatus.Failed error
+            | Blocked(_, NeedsActivities activities) ->
+                let! results =
+                    activities
+                    |> List.map (fun (opId, activity) ->
+                        async {
+                            let! result = runActivity activity
+                            return opId, result
+                        })
+                    |> Async.Parallel
+
+                match
+                    results
+                    |> Array.tryPick (fun (_, result) ->
+                        match result with
+                        | Ok _ -> None
+                        | Error error -> Some error)
+                with
+                | Some error -> return WorkflowStatus.Failed error
+                | None ->
+                    let history =
+                        (history, results)
+                        ||> Array.fold (fun history (opId, result) ->
+                            match result with
+                            | Ok output -> History.append (ActivityCompleted(opId, output)) history
+                            | Error _ -> history)
+
+                    return! advance history program
+            | Blocked(opId, NeedsCurrentTime) ->
+                let history =
+                    History.append (CurrentTimeRecorded(opId, Local.currentTimeMillis ())) history
+
+                return! advance history program
+            | Blocked(opId, NeedsLog message) ->
+                let history = History.append (LogEmitted(opId, message)) history
+                return! advance history program
+            | Blocked(_, NeedsTimerCancellation timers) ->
+                let history =
+                    (history, timers)
+                    ||> List.fold (fun history opId -> History.append (TimerCanceled opId) history)
+
+                return! advance history program
+            | Blocked(_, need) -> return WorkflowStatus.Waiting(Local.waitingOn need)
+        }
+
+    member _.tryRun (workflow: Workflow<'input, 'output>) (input: 'input) =
+        async {
+            if not (workflowIsRegistered workflow) then
+                return
+                    WorkflowStatus.Failed(
+                        "workflow is not registered in this app: "
+                        + WorkflowName.value workflow.Workflow.Name
+                    )
+            else
+                try
+                    let program =
+                        workflow.Workflow.Factory input
+                        |> Eff.Foundation.Durable.Durable.map workflow.Workflow.EncodeOutput
+
+                    let! status = advance History.empty program
+
+                    return
+                        match status with
+                        | WorkflowStatus.Completed payload ->
+                            WorkflowStatus.Completed(workflow.Workflow.DecodeOutput payload)
+                        | WorkflowStatus.NotFound -> WorkflowStatus.NotFound
+                        | WorkflowStatus.Running -> WorkflowStatus.Running
+                        | WorkflowStatus.Waiting need -> WorkflowStatus.Waiting need
+                        | WorkflowStatus.Failed error -> WorkflowStatus.Failed error
+                with error ->
+                    return WorkflowStatus.Failed error.Message
+        }
+
+    member this.run workflow input =
+        async {
+            let! status = this.tryRun workflow input
+
+            match status with
+            | WorkflowStatus.Completed output -> return output
+            | WorkflowStatus.NotFound -> return failwith "local workflow did not complete: not found"
+            | WorkflowStatus.Running -> return failwith "local workflow did not complete: still running"
+            | WorkflowStatus.Waiting need -> return failwith ("local workflow did not complete: waiting for " + need)
+            | WorkflowStatus.Failed error -> return failwith ("local workflow failed: " + error)
+        }
+
 [<RequireQualifiedAccess>]
 module Firegrid =
     let clientWith storage app =
@@ -292,6 +458,8 @@ module Firegrid =
 
     let testHostWith storage hostId app =
         TestHost(clientWith storage app, workerWith storage hostId app)
+
+    let localTestHost app = LocalTestHost app
 
 [<RequireQualifiedAccess>]
 module Durable =

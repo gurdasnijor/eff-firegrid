@@ -575,12 +575,22 @@ except as an advanced dynamic escape hatch.
 Tests should be local and substrate-free by default:
 
 ```fsharp
-let host = Firegrid.TestHost.create app
+let host = Firegrid.localTestHost app
 
 let! result =
     host.run fulfillment wishlist
 
 Expect.equal expected result
+```
+
+Local tests can also assert that a workflow has reached an external wait
+without needing a worker, stream, basin, or runtime:
+
+```fsharp
+let! status =
+    host.tryRun approvalWorkflow request
+
+Expect.equal (WorkflowStatus.Waiting "signal:approved") status
 ```
 
 Entity test:
@@ -686,6 +696,7 @@ Deliver:
 - `Durable<'output>` and `durable {}` CE
 - `call`, `Durable.Parallel`, CE `and!`, `waitFor`, `signal`, `waitForSignal`
 - `Workflow<'input,'output>` and `workflow`
+- `Firegrid.localTestHost app` for substrate-free workflow tests
 - `Firegrid.clientWith`, `workerWith`, and `testHostWith`
 - examples ported from the Mikhail workflow article shape
 - public surface tests for first-class typed steps
@@ -700,8 +711,8 @@ Acceptance:
 
 Deliver:
 
-- `Firegrid.TestHost.create`
-- `host.run workflow input`
+- broaden `Firegrid.localTestHost app`
+- `host.run workflow input` and `host.tryRun workflow input`
 - trace/assertion APIs for public durable behavior
 - replay assertions that steps execute once
 - migration of relevant `.fsx` proof examples to public test-host tests

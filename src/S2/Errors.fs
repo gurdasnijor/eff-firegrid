@@ -25,6 +25,9 @@ module S2Errors =
     [<Emit("$0 == null")>]
     let private isNil (_x: obj) : bool = jsNative
 
+    [<Emit("$0 != null && $0.status === 416")>]
+    let private isRangeStatus (_e: obj) : bool = jsNative
+
     [<Emit("(typeof $0 === 'number' && Number.isFinite($0))")>]
     let private isFiniteNum (_x: obj) : bool = jsNative
 
@@ -65,7 +68,7 @@ module S2Errors =
             SeqNumMismatch(int64 (unbox<float> (o?expectedSeqNum)))
         elif isInstance fencingTokenMismatchError o then
             FencingTokenMismatch(unbox<string> (o?expectedFencingToken))
-        elif isInstance rangeNotSatisfiableError o then
+        elif isInstance rangeNotSatisfiableError o || isRangeStatus o then
             RangeNotSatisfiable(tailSeqNum (o?tail))
         else
             Other e.Message

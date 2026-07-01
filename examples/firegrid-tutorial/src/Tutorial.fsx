@@ -97,5 +97,16 @@ let stepNames = FiregridApp.stepNames app
 
 let workflowNames = FiregridApp.workflowNames app
 
+let localHost = Firegrid.localTestHost app
+
+let localPreview =
+    async {
+        let! receipt = localHost.run checkoutWorkflow "order-123"
+        let! approvalStatus = localHost.tryRun approvalWorkflow "order-124"
+
+        printfn "local checkout: %s" receipt
+        printfn "local approval status: %A" approvalStatus
+    }
+
 printfn "steps: %A" stepNames
 printfn "workflows: %A" workflowNames

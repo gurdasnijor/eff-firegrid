@@ -23,7 +23,13 @@
 #load "../../../src/Foundation/Durable/TimerAdapter.fs"
 #load "../../../src/Foundation/Durable/Host.fs"
 #load "../../../src/Foundation/Durable/Runtime.fs"
-#load "../../../src/Foundation/Durable/App.fs"
+#load "../../../src/Foundation/Durable/App/Storage.fs"
+#load "../../../src/Foundation/Durable/App/Definitions.fs"
+#load "../../../src/Foundation/Durable/App/DurableFacade.fs"
+#load "../../../src/Foundation/Durable/App/Environment.fs"
+#load "../../../src/Foundation/Durable/App/Client.fs"
+#load "../../../src/Foundation/Durable/App/Worker.fs"
+#load "../../../src/Foundation/Durable/App/Builder.fs"
 
 open Eff
 open Eff.Foundation.Durable

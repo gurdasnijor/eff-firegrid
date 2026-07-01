@@ -16,6 +16,10 @@ type DurableIr =
     { Operations: IrOperation list
       Return: ValueExpr }
 
+type DurableIrDraft =
+    { NextOpId: OpId
+      Operations: IrOperation list }
+
 [<RequireQualifiedAccess>]
 module ValueExpr =
     let literal value = Literal value
@@ -28,9 +32,24 @@ module ValueExpr =
 
 [<RequireQualifiedAccess>]
 module DurableIr =
+    let empty =
+        { NextOpId = OpId.zero
+          Operations = [] }
+
     let create operations returnValue =
         { Operations = operations
           Return = returnValue }
+
+    let finish returnValue draft =
+        { Operations = draft.Operations
+          Return = returnValue }
+
+    let private allocate draft =
+        let opId = draft.NextOpId
+
+        let next = { draft with NextOpId = OpId.next opId }
+
+        opId, next
 
     let callActivity opId name input = CallActivity(opId, name, input)
 
@@ -39,6 +58,33 @@ module DurableIr =
     let readCurrentTime opId = ReadCurrentTime opId
 
     let writeLog opId message = WriteLog(opId, message)
+
+    let appendCallActivity name input draft =
+        let opId, draft = allocate draft
+
+        { draft with
+            Operations = draft.Operations @ [ callActivity opId name input ] },
+        ValueExpr.activityResult opId
+
+    let appendAwaitEvent key draft =
+        let opId, draft = allocate draft
+
+        { draft with
+            Operations = draft.Operations @ [ awaitEvent opId key ] },
+        ValueExpr.eventResult opId
+
+    let appendCurrentTime draft =
+        let opId, draft = allocate draft
+
+        { draft with
+            Operations = draft.Operations @ [ readCurrentTime opId ] },
+        ValueExpr.currentTimeResult opId
+
+    let appendLog message draft =
+        let opId, draft = allocate draft
+
+        { draft with
+            Operations = draft.Operations @ [ writeLog opId message ] }
 
     let private value history expr =
         match expr with

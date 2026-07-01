@@ -28,6 +28,8 @@ type DurableIrDraft =
 
 type DurableWorkflow = { Name: string; Program: DurableIr }
 
+type DurableIrApp = { Workflows: DurableWorkflow list }
+
 type DurableIrIssue =
     | EmptyWorkflowName
     | DuplicateOperationId of OpId
@@ -35,9 +37,19 @@ type DurableIrIssue =
     | MissingValueSource of OpId
     | FutureValueSource of source: OpId * consumer: OpId
 
+type DurableIrAppIssue =
+    | EmptyDurableIrApp
+    | DuplicateWorkflowName of string
+    | InvalidWorkflowDescriptor of workflowName: string * issues: DurableIrIssue list
+
 type DurableWorkflowReplay =
     | InvalidWorkflow of DurableIrIssue list
     | ValidWorkflow of Outcome<Value>
+
+type DurableIrAppReplay =
+    | InvalidDurableIrApp of DurableIrAppIssue list
+    | DurableIrWorkflowNotFound of string
+    | DurableIrWorkflowReplay of DurableWorkflowReplay
 
 [<RequireQualifiedAccess>]
 module ValueExpr =
@@ -316,3 +328,54 @@ module DurableWorkflow =
         match validate workflow with
         | [] -> DurableIr.replay history workflow.Program |> ValidWorkflow
         | issues -> InvalidWorkflow issues
+
+[<RequireQualifiedAccess>]
+module DurableIrApp =
+    let empty = { Workflows = [] }
+
+    let create workflows = { Workflows = workflows |> List.ofSeq }
+
+    let bindWorkflow workflow app =
+        { app with
+            Workflows = app.Workflows @ [ workflow ] }
+
+    let private duplicateNameIssues workflows =
+        let rec loop seen issues remaining =
+            match remaining with
+            | [] -> issues
+            | workflow :: rest ->
+                if List.contains workflow.Name seen then
+                    loop seen (issues @ [ DuplicateWorkflowName workflow.Name ]) rest
+                else
+                    loop (seen @ [ workflow.Name ]) issues rest
+
+        loop [] [] workflows
+
+    let validate app =
+        let appIssues =
+            if List.isEmpty app.Workflows then
+                [ EmptyDurableIrApp ]
+            else
+                []
+
+        let duplicateIssues = duplicateNameIssues app.Workflows
+
+        let workflowIssues =
+            app.Workflows
+            |> List.collect (fun workflow ->
+                match DurableWorkflow.validate workflow with
+                | [] -> []
+                | issues -> [ InvalidWorkflowDescriptor(workflow.Name, issues) ])
+
+        appIssues @ duplicateIssues @ workflowIssues
+
+    let tryFindWorkflow name app =
+        app.Workflows |> List.tryFind (fun workflow -> workflow.Name = name)
+
+    let replayWorkflow name history app =
+        match validate app with
+        | [] ->
+            match tryFindWorkflow name app with
+            | Some workflow -> DurableWorkflow.replay history workflow |> DurableIrWorkflowReplay
+            | None -> DurableIrWorkflowNotFound name
+        | issues -> InvalidDurableIrApp issues

@@ -130,6 +130,18 @@ the F# authoring layer can lower independent activity calls into one operation,
 and replay produces one `NeedsActivities` block for the host to dispatch
 together.
 
+The Rust-targetable descriptor boundary is `DurableIrApp`:
+
+```fsharp
+type DurableIrApp =
+    { Workflows: DurableWorkflow list }
+```
+
+The host should load or receive this descriptor, validate duplicate workflow
+names and per-workflow IR issues, then call `DurableIrApp.replayWorkflow` by
+workflow name. That keeps runtime admission centralized instead of asking every
+host loop to remember separate validate/find/replay steps.
+
 Migration direction:
 
 - keep the existing `durable {}` CE working on .NET/Fable JS while the runtime

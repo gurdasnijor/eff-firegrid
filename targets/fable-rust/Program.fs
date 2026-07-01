@@ -3,12 +3,14 @@ module FiregridRust.Program
 open Eff.Foundation.Durable
 
 let replaySummary () =
-    let activity = Activities.create "reserve" "order-1"
-    let program = Workflow.call activity.Name activity.Input
+    let program =
+        DurableIr.create
+            [ DurableIr.callActivity OpId.zero "reserve" (ValueExpr.literal "order-1") ]
+            (ValueExpr.activityResult OpId.zero)
 
-    match Durable.replay History.empty program with
+    match DurableIr.replay History.empty program with
     | Done _ -> "done"
-    | Blocked(_, NeedsActivity blocked) when blocked = activity -> "blocked:activity"
+    | Blocked(_, NeedsActivity { Name = "reserve"; Input = "order-1" }) -> "blocked:activity"
     | Blocked(_, _) -> "blocked:other"
 
 [<EntryPoint>]

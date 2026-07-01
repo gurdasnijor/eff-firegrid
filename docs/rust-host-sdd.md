@@ -87,6 +87,53 @@ Non-goals for this phase:
 - pretending Fable Rust can currently lower every F# continuation pattern
 - replacing the production runtime before the compile target is credible
 
+## Closure-Free Durable IR
+
+The current ergonomic `Durable<'a>` implementation stores continuations inside
+the durable program:
+
+```fsharp
+Perform of Activity * k: (Value -> Durable<'a>)
+```
+
+That shape is convenient for early F# implementation work, but it produces
+recursive higher-order closures that Fable Rust cannot reliably lower today.
+
+The Rust-targetable direction is `DurableIr`:
+
+```fsharp
+type ValueExpr =
+    | Literal of Value
+    | ActivityResult of OpId
+    | EventResult of OpId
+    | CurrentTimeResult of OpId
+
+type IrOperation =
+    | CallActivity of OpId * name: string * input: ValueExpr
+    | AwaitEvent of OpId * EventKey
+    | ReadCurrentTime of OpId
+    | WriteLog of OpId * message: string
+
+type DurableIr =
+    { Operations: IrOperation list
+      Return: ValueExpr }
+```
+
+This representation is data, not closures. It can be serialized, inspected,
+lowered to host commands, and compiled through Fable Rust. The current Fable
+Rust target uses `DurableIr` as the first compileable durable core slice.
+
+Migration direction:
+
+- keep the existing `durable {}` CE working on .NET/Fable JS while the runtime
+  still depends on it
+- expand `DurableIr` until it can represent the workflow subset the host needs
+- add a lowering path from ergonomic authoring into `DurableIr`
+- retire closure-carrying durable internals once `DurableIr` covers workflows,
+  parallel calls, timers, signals, current time, and logs
+- keep `#if FABLE_RUST` compatibility sections temporary and shrink them as the
+  IR replaces continuation-heavy internals
+
 ## Native Dependencies
 
 Initial Rust host dependencies:
